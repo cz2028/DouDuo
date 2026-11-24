@@ -4189,20 +4189,6 @@ struct DYUpstreamVideoPage: View {
         }
     }
 
-    private func save() {
-        guard !saving else { return }
-        saving = true
-        onToast?("正在保存…")
-        Task {
-            do {
-                try await DYSaver.save(item, fromOfflineLibrary: usesOfflineFile)
-                onToast?(item.images.isEmpty ? "视频已保存到相册" : "图集已保存到相册")
-            } catch {
-                onToast?("保存失败：\(error.localizedDescription)")
-            }
-            saving = false
-        }
-    }
 
     /// 小红书式左下信息区：头像 + 昵称 + 红色「关注」胶囊，下面文案 / 音乐
     private func info(_ fg: Color) -> some View {
@@ -4370,13 +4356,6 @@ struct DYUpstreamVideoPage: View {
                     Button("不感兴趣", systemImage: "hand.thumbsdown") { onDislike() }
                         .accessibilityIdentifier("douyin.dislike")
                 }
-                Button {
-                    save()
-                } label: {
-                    Label(saving ? "保存中…" : "下载", systemImage: "arrow.down.to.line")
-                }
-                .disabled(saving)
-                .accessibilityIdentifier("douyin.save")
             }
             // 表层：铺满宽度 / 倍速 / 静音 / 听书 / 自动连播。其余全局偏好都在设置页，不重复。
             Section {

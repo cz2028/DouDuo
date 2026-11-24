@@ -3,7 +3,6 @@
 import SwiftUI
 import Combine
 import AVFoundation
-import Photos
 
 // MARK: - 数据
 
@@ -1026,57 +1025,7 @@ struct DYDanmakuLayer: View {
 }
 
 
-// MARK: - 保存到相册
-
-enum DYSaver {
-    enum SaveError: LocalizedError {
-        case denied, noURL
-        var errorDescription: String? {
-            switch self {
-            case .denied: "没有相册权限：设置 → DouDuo → 照片 → 允许添加"
-            case .noURL: "这条没有可下载的地址"
-            }
-        }
-    }
-
-    static func save(_ a: DYAweme, fromOfflineLibrary: Bool = false) async throws {
-        let st = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-        guard st == .authorized || st == .limited else { throw SaveError.denied }
-        if fromOfflineLibrary {
-            guard let file = DYOfflineVideoStore.localURL(a.id) else { throw SaveError.noURL }
-            try await saveVideo(file)
-            return
-        }
-        if !a.images.isEmpty {
-            var datas: [Data] = []
-            for s in a.images { if let u = URL(string: s) { datas.append(try await download(u)) } }
-            try await PHPhotoLibrary.shared().performChanges {
-                for d in datas { PHAssetCreationRequest.forAsset().addResource(with: .photo, data: d, options: nil) }
-            }
-            return
-        }
-        guard let s = a.play, let u = URL(string: s) else { throw SaveError.noURL }
-        let data = try await download(u)
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("dd-\(a.id).mp4")
-        try data.write(to: file)
-        defer { try? FileManager.default.removeItem(at: file) }
-        try await saveVideo(file)
-    }
-
-    private static func saveVideo(_ file: URL) async throws {
-        try await PHPhotoLibrary.shared().performChanges {
-            PHAssetCreationRequest.forAsset().addResource(with: .video, fileURL: file, options: nil)
-        }
-    }
-
-    private static func download(_ u: URL) async throws -> Data {
-        var r = URLRequest(url: u)
-        DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
-        let (d, resp) = try await URLSession.shared.data(for: r)
-        if let h = resp as? HTTPURLResponse, h.statusCode >= 400 { throw DYError.bad("下载失败 HTTP \(h.statusCode)") }
-        return d
-    }
-}
+// TestFlight / App Store 版不提供下载、保存音视频或图集（App Review 5.2.3）。
 
 // MARK: - 封面网格（搜索 / 我的 / 作者）
 

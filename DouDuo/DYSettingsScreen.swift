@@ -156,12 +156,6 @@ struct DYSettingsScreen: View {
                         .onAppear { if cacheCount != DYVideoCache.limit { cacheCount = DYVideoCache.limit } }
                     }
                     NavigationLink {
-                        DYOfflineDownloadScreen(candidateSource: offlineCandidateSource, interactionBridge: offlineInteractionBridge)
-                    } label: {
-                        Label("离线视频", systemImage: "tray.and.arrow.down")
-                    }
-                    .accessibilityIdentifier("settings.cache.offline")
-                    NavigationLink {
                         DYStorageScreen(onCleared: onCacheCleared)
                     } label: {
                         Label("储存空间", systemImage: "internaldrive")

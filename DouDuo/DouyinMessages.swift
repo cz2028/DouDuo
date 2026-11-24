@@ -3192,9 +3192,6 @@ struct DYForwardScreen: View {
         var result: [DYForwardPanelAction] = []
         if !onlineActionsAllowed {
             result.append(.init(id: "copy", title: "复制链接", symbol: "link"))
-            if usesClassicLayout {
-                result.append(.init(id: "download", title: saving ? "保存中…" : "下载", symbol: "arrow.down.to.line"))
-            }
             result.append(.init(id: "other", title: "其他分享", symbol: "square.and.arrow.up"))
             return result
         }
@@ -3202,7 +3199,6 @@ struct DYForwardScreen: View {
         if model.contacts.contains(where: { $0.kind == 2 }) { result.append(.init(id: "groups", title: "分享至群", symbol: "person.2.fill")) }
         result.append(.init(id: "copy", title: "复制链接", symbol: "link"))
         if DouyinBridge.primary != nil { result.append(.init(id: "shortlink", title: shortLinking ? "生成中…" : "复制短链", symbol: "link.badge.plus")) }
-        if usesClassicLayout { result.append(.init(id: "download", title: saving ? "保存中…" : "下载", symbol: "arrow.down.to.line")) }
         result.append(.init(id: "other", title: "其他分享", symbol: "square.and.arrow.up"))
         if model.loginRequired { result.append(.init(id: "login", title: "登录抖音", symbol: "person.crop.circle")) }
         else if !model.loading && model.contacts.isEmpty { result.append(.init(id: "retry", title: "重新加载", symbol: "arrow.clockwise")) }
@@ -3390,17 +3386,6 @@ struct DYForwardScreen: View {
                     saveMessage = "短链生成失败，已改为复制长链接"
                     DYCopyVideoLink.copy(item)
                 }
-            }
-        case "download":
-            guard !saving else { return }
-            saving = true
-            saveMessage = "正在保存…"
-            Task {
-                defer { saving = false }
-                do {
-                    try await DYSaver.save(item, fromOfflineLibrary: fromOfflineLibrary)
-                    saveMessage = item.images.isEmpty ? "视频已保存到相册" : "图集已保存到相册"
-                } catch { saveMessage = "保存失败：\(error.localizedDescription)" }
             }
         case "other": showOtherApps = true
         case "login": showLogin = true
