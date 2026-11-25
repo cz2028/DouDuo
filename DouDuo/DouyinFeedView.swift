@@ -4019,6 +4019,8 @@ struct DYUpstreamVideoPage: View {
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     /// 右侧功能栏（赞/评论/收藏/搜索/铺满）是否显示。默认开；关掉后画面更干净，常驻小眼睛按钮可切回。
     @AppStorage("douyin_action_rail_visible_v1") private var railVisible = true
+    @State private var showCustomRate = false
+    @State private var customRateText = ""
     @State private var heart = false
     @State private var shareCoversOfflineVideo = false
     @State private var saving = false
@@ -4163,6 +4165,19 @@ struct DYUpstreamVideoPage: View {
         .onAppear { if isCurrent, onBack == nil { DYBoostRouter.shared.adopt(boost) } }
         // 弹幕：轮到这条时才拉（一次拉整条视频的）——共用 DYDanmakuModel
         .task(id: isCurrent) { await dm.load(item, isCurrent: isCurrent, bridge: bridge) }
+        .alert("自定义倍速", isPresented: $showCustomRate) {
+            TextField("0.1 ~ 4.0", text: $customRateText)
+                .keyboardType(.decimalPad)
+            Button("取消", role: .cancel) {}
+            Button("确定") {
+                if let r = DYPlaybackRates.parse(customRateText) {
+                    playbackRate = r
+                    onToast?(rateTitle(r))
+                }
+            }
+        } message: {
+            Text("输入 0.1 到 4.0 之间的倍速，例如 0.3、1.8、3.0。")
+        }
     }
 
     private func sendDanmaku() {
@@ -4410,10 +4425,18 @@ struct DYUpstreamVideoPage: View {
                     Picker("倍速", selection: Binding(
                         get: { playbackRate },
                         set: { r in playbackRate = r; onToast?(rateTitle(r)) })) {
-                        ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in Text(rateTitle(r)).tag(r) }
+                        ForEach(DYPlaybackRates.presets, id: \.self) { r in Text(DYPlaybackRates.title(r)).tag(r) }
+                        if DYPlaybackRates.isCustom(playbackRate) {
+                            Text(String(format: "%.2g", playbackRate)).tag(playbackRate)
+                        }
                     }
+                    Button("自定义倍速…", systemImage: "slider.horizontal.3") {
+                        customRateText = String(format: "%g", playbackRate)
+                        showCustomRate = true
+                    }
+                    .accessibilityIdentifier("douyin.quick.rate.custom")
                 } label: {
-                    Label("倍速 · \(playbackRate == playbackRate.rounded() ? String(format: "%.0f", playbackRate) : String(format: "%g", playbackRate))×", systemImage: "speedometer")
+                    Label("倍速 · \(DYPlaybackRates.title(playbackRate))×", systemImage: "speedometer")
                 }
                 .accessibilityIdentifier("douyin.quick.speed")
                 Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }

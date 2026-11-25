@@ -108,7 +108,7 @@ final class DDAudioEngineHub {
         playerNode.stop()
         activeOwner = owner
         reconnectGraph(format: format, force: false)
-        timePitch.rate = max(0.25, min(4.0, rate))
+        timePitch.rate = max(0.1, min(4.0, rate))   // 支持 0.1 倍速：原来下限 0.25 会让 0.1x 画面/声音不同步
         setMuted(muted, owner: owner)
         try ensureRunning()
     }
@@ -144,7 +144,7 @@ final class DDAudioEngineHub {
 
     func setRate(_ rate: Float, owner: UUID) {
         guard activeOwner == owner else { return }
-        timePitch.rate = max(0.25, min(4.0, rate))
+        timePitch.rate = max(0.1, min(4.0, rate))   // 支持 0.1 倍速：原来下限 0.25 会让 0.1x 画面/声音不同步
     }
 
     func setMuted(_ muted: Bool, owner: UUID) {

@@ -59,7 +59,11 @@ final class DYDanmakuEngineView: UIView {
     private var pool: [CALayer] = []
     private var images: [String: CGImage] = [:]
     private var sizes: [String: CGSize] = [:]
+    private var imageOrder: [String] = []           // 图片缓存淘汰顺序（先进先出）
     private var lastShown: [String: Double] = [:]   // 去重：同文本 10s 内不重复
+    /// 上次处理过的弹幕内容指纹。播放器 0.25s 一次的 timeObserver 会把同一份 items 反复传进来，
+    /// 之前每次都全量 filter（弹幕多时到数千条，4Hz × O(n) 持续吃主线程）。指纹不变就直接跳过。
+    private var lastMergeFingerprint = ""
     private var link: CADisplayLink?
     private var clock = DYDanmakuClock()
     private var lanes = 0
@@ -107,6 +111,11 @@ final class DYDanmakuEngineView: UIView {
 
     /// 新到的弹幕并入队列；已经在飞的不受影响，过去时间点的不倒着补（跟抖音一样）
     private func merge(_ items: [DYDanmaku]) {
+        // 同一份 items 0.25s 一次重复传入时不再全量扫描。指纹 = 数量 + 首尾 id，
+        // 新增弹幕（含中间插入）和换视频都会改变它，保证不漏。
+        let fp = "\(items.count)|\(items.first?.id ?? "")|\(items.last?.id ?? "")"
+        if fp == lastMergeFingerprint { return }
+        lastMergeFingerprint = fp
         let fresh = items.filter { $0.offset.isFinite && $0.offset >= 0 && !$0.id.isEmpty && !queued.contains($0.id) }
         guard !fresh.isEmpty else { return }
         for d in fresh { queued.insert(d.id) }
@@ -119,7 +128,9 @@ final class DYDanmakuEngineView: UIView {
             let doomed = Array(queue.prefix(dropCount))
             queue.removeFirst(dropCount)
             for d in doomed where !flying.contains(where: { $0.id == d.id }) {
-                queued.remove(d.id); done.remove(d.id); lastShown.removeValue(forKey: d.id)
+                queued.remove(d.id); done.remove(d.id)
+                // lastShown 的 key 是归一化文本（见 spawn），不是 id；用 id 删永远删不掉，会一直涨
+                lastShown.removeValue(forKey: DYDanmakuPolicy.normalized(d.text))
             }
             cursor = max(0, cursor - dropCount)
         }
@@ -134,6 +145,7 @@ final class DYDanmakuEngineView: UIView {
         spawnedAt.removeAll()
         lastShown.removeAll()
         done.removeAll()
+        lastMergeFingerprint = ""   // 允许跳转后重新接收同一批 items
         // 从新位置往后排（抖音：快进/拖动后清屏，从当前时间重新出）
         cursor = queue.firstIndex { $0.offset >= t } ?? queue.count
         lastT = t
@@ -293,7 +305,13 @@ final class DYDanmakuEngineView: UIView {
 
     private func image(for d: DYDanmaku) -> CGImage? {
         if let i = images[d.id] { return i }
-        if images.count > 800 { images.removeAll(); sizes.removeAll() }
+        // 之前满 800 就全清，导致主线程一次性重做几百条的文本测量+阴影位图渲染（尖峰卡顿）。
+        // 改为只淘汰最早的一半，平滑回收；在屏弹幕的 layer 已持有 CGImage，淘汰不影响显示。
+        if images.count > 800 {
+            let drop = min(400, imageOrder.count)
+            for k in imageOrder.prefix(drop) { images.removeValue(forKey: k); sizes.removeValue(forKey: k) }
+            imageOrder.removeFirst(drop)
+        }
         let font = UIFont.systemFont(ofSize: DYDanmakuStyle.fontSize, weight: .semibold)
         let shadow = NSShadow()
         shadow.shadowColor = UIColor.black.withAlphaComponent(0.7)
@@ -313,6 +331,7 @@ final class DYDanmakuEngineView: UIView {
         }
         images[d.id] = img.cgImage
         sizes[d.id] = box
+        imageOrder.append(d.id)
         return img.cgImage
     }
 }

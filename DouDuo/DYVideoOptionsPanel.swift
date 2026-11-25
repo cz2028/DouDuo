@@ -1,5 +1,20 @@
 import SwiftUI
 
+/// 播放倍速档位与自定义解析（播放页菜单 / 视频设置面板共用）。
+enum DYPlaybackRates {
+    static let presets: [Double] = [0.1, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
+    static let minRate = 0.1
+    static let maxRate = 4.0
+    static func title(_ r: Double) -> String { r == 1 ? "1" : String(format: "%g", r) }
+    static func isCustom(_ r: Double) -> Bool { !presets.contains(where: { abs($0 - r) < 0.001 }) }
+    /// 解析用户输入，限幅到 0.1~4.0；无效输入返回 nil。
+    static func parse(_ s: String) -> Double? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "倍", with: "")
+        guard let v = Double(t), v.isFinite else { return nil }
+        return min(maxRate, max(minRate, v))
+    }
+}
+
 /// Shared by recommendation, following and every works player. These are the
 /// existing persisted preferences; moving their controls does not reset them.
 @available(iOS 27.1, *)
@@ -14,6 +29,8 @@ struct DYVideoOptionsPanel: View {
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @State private var listAtTop = true
     @State private var headerHeight: CGFloat = 44
+    @State private var showCustomRate = false
+    @State private var customRateText = ""
     var onDislike: (() -> Void)?
     var onSendDanmaku: (() -> Void)?
     var onWatchLater: (() -> Void)?
@@ -60,21 +77,36 @@ struct DYVideoOptionsPanel: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Label("倍速", systemImage: "speedometer")
                                 .font(.subheadline.weight(.semibold))
-                            HStack(spacing: 6) {
-                                ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 6) {
+                                    ForEach(DYPlaybackRates.presets, id: \.self) { rate in
+                                        Button {
+                                            playbackRate = rate
+                                        } label: {
+                                            Text(DYPlaybackRates.title(rate))
+                                                .font(.subheadline.weight(abs(playbackRate - rate) < 0.01 ? .semibold : .regular))
+                                                .foregroundStyle(.primary)
+                                                .frame(width: 52, minHeight: 44)
+                                                .background(.black.opacity(abs(playbackRate - rate) < 0.01 ? 0.30 : 0.12), in: .capsule)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .accessibilityLabel(rate == 1 ? "正常速度" : "\(rate) 倍速")
+                                        .accessibilityAddTraits(abs(playbackRate - rate) < 0.01 ? .isSelected : [])
+                                        .accessibilityIdentifier("douyin.options.rate.\(rate)")
+                                    }
                                     Button {
-                                        playbackRate = rate
+                                        customRateText = String(format: "%g", playbackRate)
+                                        showCustomRate = true
                                     } label: {
-                                        Text(rate.formatted(.number.precision(.fractionLength(0...2))))
-                                            .font(.subheadline.weight(abs(playbackRate - rate) < 0.01 ? .semibold : .regular))
+                                        Text(DYPlaybackRates.isCustom(playbackRate) ? String(format: "%.2g", playbackRate) : "自选")
+                                            .font(.subheadline.weight(DYPlaybackRates.isCustom(playbackRate) ? .semibold : .regular))
                                             .foregroundStyle(.primary)
-                                            .frame(maxWidth: .infinity, minHeight: 44)
-                                            .background(.black.opacity(abs(playbackRate - rate) < 0.01 ? 0.30 : 0.12), in: .capsule)
+                                            .frame(width: 52, minHeight: 44)
+                                            .background(.black.opacity(DYPlaybackRates.isCustom(playbackRate) ? 0.30 : 0.12), in: .capsule)
                                             .contentShape(Rectangle())
                                     }
-                                    .accessibilityLabel(rate == 1 ? "正常速度" : "\(rate.formatted()) 倍速")
-                                    .accessibilityAddTraits(abs(playbackRate - rate) < 0.01 ? .isSelected : [])
-                                    .accessibilityIdentifier("douyin.options.rate.\(rate)")
+                                    .accessibilityLabel("自定义倍速")
+                                    .accessibilityIdentifier("douyin.options.rate.custom")
                                 }
                             }
                         }
@@ -122,6 +154,16 @@ struct DYVideoOptionsPanel: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.options.panel")
+        .alert("自定义倍速", isPresented: $showCustomRate) {
+            TextField("0.1 ~ 4.0", text: $customRateText)
+                .keyboardType(.decimalPad)
+            Button("取消", role: .cancel) {}
+            Button("确定") {
+                if let r = DYPlaybackRates.parse(customRateText) { playbackRate = r }
+            }
+        } message: {
+            Text("输入 0.1 到 4.0 之间的倍速，例如 0.3、1.8、3.0。")
+        }
     }
 
     private func shortcut(_ title: String, icon: String, selected: Bool,
