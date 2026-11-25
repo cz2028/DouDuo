@@ -70,8 +70,7 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 && gh release delete "$TAG" --yes --cleanup-tag || true
           gh release create "$TAG" build/DouDuo-unsigned.ipa \
             --title "DouDuo v${VER} (build ${BLD}) 未签名 IPA" \
-            --notes "未签名 IPA，需自行签名安装。
-主要的性能/内存修复见仓库提交记录。"
+            --notes "未签名 IPA，需自行签名安装；主要性能与内存修复见提交记录。"
           echo "DOWNLOAD=https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/DouDuo-unsigned.ipa" >> "$GITHUB_ENV"
 
       - name: 输出永久下载地址
