@@ -119,7 +119,7 @@ final class DYDanmakuEngineView: UIView {
             let doomed = Array(queue.prefix(dropCount))
             queue.removeFirst(dropCount)
             for d in doomed where !flying.contains(where: { $0.id == d.id }) {
-                queued.remove(d.id); done.remove(d.id); lastShown.remove(d.id)
+                queued.remove(d.id); done.remove(d.id); lastShown.removeValue(forKey: d.id)
             }
             cursor = max(0, cursor - dropCount)
         }

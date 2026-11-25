@@ -10,16 +10,15 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26         # iOS 26 SDK 需要 Xcode 26；若无此 runner 改 macos-15 + 指定 Xcode
+    runs-on: macos-27         # 项目要求 Xcode 27.2 / iOS 27.2 SDK（docs/duo-redesign-plan.md）
     timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: 选 Xcode 26
+      - name: 选 Xcode 27.2
         run: |
-          ls /Applications | grep -i xcode
-          sudo xcode-select -s /Applications/Xcode-26.app/Contents/Developer || true
+          sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
           xcodebuild -version
 
       - name: 下载 VLCKit 二进制（约 1GB）

@@ -44,7 +44,7 @@ final class DDPlayback {
     private func depthLocked() -> Int { _coverCount + _settingsCovers.count }
 
     var appIsActive: Bool { lock.lock(); defer { lock.unlock() }; return _appIsActive }
-    private(set) var pauseReason: DDPlaybackPauseReason { lock.lock(); defer { lock.unlock() }; return _pauseReason }
+    var pauseReason: DDPlaybackPauseReason { lock.lock(); defer { lock.unlock() }; return _pauseReason }
     var coverHold: Bool { coverDepth > 0 }
     var coverDepth: Int { lock.lock(); defer { lock.unlock() }; return depthLocked() }
     /// 这一层的播放器现在是不是露在最上面
@@ -533,7 +533,7 @@ struct PlayerPage: View {
     @State private var timeToken: Any?
     /// MPRemoteCommandCenter 是进程级单例：block-based target 必须存 token 精确移除，
     /// 否则每个播放页的闭包会永久挂在系统命令上（页面不释放）。
-    @State private var remoteTokens: [any MPRemoteCommandHandlerObject] = []
+    @State private var remoteTokens: [Any] = []
     @State private var endObserver: NSObjectProtocol?
     @State private var barWidth: CGFloat = 1
     @State private var vlc: VLCPlayerController?        // AVPlayer 起播失败 → VLC 软解兜底
