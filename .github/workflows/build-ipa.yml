@@ -1,0 +1,56 @@
+name: Build DouDuo unsigned IPA
+
+# 放到 fork 仓库的 .github/workflows/build-ipa.yml
+# 触发后约 10-20 分钟出包（VLCKit 下载约 1GB 占大头）
+
+on:
+  workflow_dispatch:          # 手动点 Run workflow
+  push:
+    branches: [main]          # 或只在手动触发时构建，去掉这段
+
+jobs:
+  build:
+    runs-on: macos-26         # iOS 26 SDK 需要 Xcode 26；若无此 runner 改 macos-15 + 指定 Xcode
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 选 Xcode 26
+        run: |
+          ls /Applications | grep -i xcode
+          sudo xcode-select -s /Applications/Xcode-26.app/Contents/Developer || true
+          xcodebuild -version
+
+      - name: 下载 VLCKit 二进制（约 1GB）
+        run: |
+          chmod +x scripts/fetch-vlckit.sh
+          ./scripts/fetch-vlckit.sh
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        run: xcodegen generate
+
+      - name: 编译真机包（不签名）
+        run: |
+          xcodebuild -project DouDuo.xcodeproj -scheme DouDuo -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build/dd \
+            build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: 打包 unsigned IPA
+        run: |
+          APP=build/dd/Build/Products/Release-iphoneos/DouDuo.app
+          test -d "$APP" || { echo "编译产物不存在"; exit 1; }
+          mkdir -p build/ipa/Payload
+          cp -R "$APP" build/ipa/Payload/
+          (cd build/ipa && zip -qry ../DouDuo-unsigned.ipa Payload)
+          ls -lh build/DouDuo-unsigned.ipa
+
+      - name: 上传 IPA 制品
+        uses: actions/upload-artifact@v4
+        with:
+          name: DouDuo-unsigned-ipa
+          path: build/DouDuo-unsigned.ipa
+          retention-days: 30
