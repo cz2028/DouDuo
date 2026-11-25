@@ -65,6 +65,18 @@ final class DYDanmakuEngineView: UIView {
     /// 之前每次都全量 filter（弹幕多时到数千条，4Hz × O(n) 持续吃主线程）。指纹不变就直接跳过。
     private var lastMergeFingerprint = ""
     private var link: CADisplayLink?
+    /// 60fps 足够滚动文字顺滑；长时间挂在 120fps 会积热降频，反而越看越卡。
+    /// 运行中每 2 秒复查一次热状态，升温就降到 30fps，避免「停留久了开始卡顿」。
+    private var lastThermal: ProcessInfo.ThermalState = .nominal
+    private var thermalCheckAt: CFTimeInterval = 0
+    private func frameRange(for state: ProcessInfo.ThermalState) -> CAFrameRateRange {
+        switch state {
+        case .serious, .critical:
+            return CAFrameRateRange(minimum: 24, maximum: 30, preferred: 30)
+        default:
+            return CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+        }
+    }
     private var clock = DYDanmakuClock()
     private var lanes = 0
     private var lastT: Double = -1
@@ -159,10 +171,9 @@ final class DYDanmakuEngineView: UIView {
     private func start() {
         guard link == nil, window != nil, !DDPerfExperiment.off("DANMAKU") else { return }
         let l = CADisplayLink(target: DYDanmakuEngineTick(self), selector: #selector(DYDanmakuEngineTick.tick(_:)))
-        // 发热（serious 及以上）时降到 60 帧：弹幕平移 60 帧肉眼也是顺的
-        let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
-        l.preferredFrameRateRange = hot ? CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
-                                        : CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        lastThermal = ProcessInfo.processInfo.thermalState
+        l.preferredFrameRateRange = frameRange(for: lastThermal)
+        thermalCheckAt = 0
         l.add(to: .main, forMode: .common)
         link = l
         lastTS = 0
@@ -191,6 +202,7 @@ final class DYDanmakuEngineView: UIView {
     }
 
     fileprivate func tick(_ l: CADisplayLink) {
+        #if DEBUG
         if lastTS > 0 {
             gaps.append(l.timestamp - lastTS)
             if gaps.count >= 480 {
@@ -202,6 +214,15 @@ final class DYDanmakuEngineView: UIView {
             }
         }
         lastTS = l.timestamp
+        #endif
+        if l.timestamp - thermalCheckAt > 2 {
+            thermalCheckAt = l.timestamp
+            let state = ProcessInfo.processInfo.thermalState
+            if state.rawValue != lastThermal.rawValue {
+                lastThermal = state
+                link?.preferredFrameRateRange = frameRange(for: state)
+            }
+        }
         let lead = l.targetTimestamp - CACurrentMediaTime()
         render(clock.now(Date().addingTimeInterval(max(0, lead))))
     }

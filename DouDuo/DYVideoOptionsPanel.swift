@@ -163,7 +163,7 @@ struct DYVideoOptionsPanel: View {
                 .font(.subheadline)
                 .fontWeight(selected ? .semibold : .regular)
                 .foregroundStyle(.primary)
-                .frame(width: 52, minHeight: 44)
+                .frame(width: 52, height: 44)
                 .background(Capsule().fill(Color.black.opacity(opacity)))
                 .contentShape(Rectangle())
         }
