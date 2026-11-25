@@ -1048,17 +1048,24 @@ enum DYSaver {
             return
         }
         if !a.images.isEmpty {
-            var datas: [Data] = []
-            for s in a.images { if let u = URL(string: s) { datas.append(try await download(u)) } }
-            try await PHPhotoLibrary.shared().performChanges {
-                for d in datas { PHAssetCreationRequest.forAsset().addResource(with: .photo, data: d, options: nil) }
+            // 原来把所有图片 Data 一次性收进 [Data] 再统一写入，图集多时几十 MB 同时驻留。
+            // 改成下一张、写一张、立刻释放，峰值只留单张。
+            var saved = 0
+            for s in a.images {
+                guard let u = URL(string: s) else { continue }
+                let data = try await downloadData(u)
+                try await PHPhotoLibrary.shared().performChanges {
+                    PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
+                }
+                saved += 1
             }
+            guard saved > 0 else { throw SaveError.noURL }
             return
         }
         guard let s = a.play, let u = URL(string: s) else { throw SaveError.noURL }
-        let data = try await download(u)
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("dd-\(a.id).mp4")
-        try data.write(to: file)
+        // 视频绝不走 Data：整段视频几十~上百 MB 一次性进内存，截图/切应用时正好撞上系统快照。
+        // 用 URLSession.download 流式落盘，Photos 直接引用文件 URL。
+        let file = try await downloadFile(u, ext: ".mp4")
         defer { try? FileManager.default.removeItem(at: file) }
         try await saveVideo(file)
     }
@@ -1069,12 +1076,27 @@ enum DYSaver {
         }
     }
 
-    private static func download(_ u: URL) async throws -> Data {
+    private static func downloadData(_ u: URL) async throws -> Data {
         var r = URLRequest(url: u)
         DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
         let (d, resp) = try await URLSession.shared.data(for: r)
         if let h = resp as? HTTPURLResponse, h.statusCode >= 400 { throw DYError.bad("下载失败 HTTP \(h.statusCode)") }
         return d
+    }
+
+    /// 流式下载到临时文件，返回文件 URL（内存里只留很小的缓冲）。
+    private static func downloadFile(_ u: URL, ext: String) async throws -> URL {
+        var r = URLRequest(url: u)
+        DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
+        let (temp, resp) = try await URLSession.shared.download(from: r)
+        if let h = resp as? HTTPURLResponse, h.statusCode >= 400 {
+            try? FileManager.default.removeItem(at: temp)
+            throw DYError.bad("下载失败 HTTP \(h.statusCode)")
+        }
+        let local = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dd-save-\(UUID().uuidString)\(ext)")
+        try FileManager.default.moveItem(at: temp, to: local)
+        return local
     }
 }
 

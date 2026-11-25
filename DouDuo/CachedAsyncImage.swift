@@ -16,6 +16,9 @@ final class ImageCache {
     private let diskDir: URL
     private let io = DispatchQueue(label: "imagecache.disk", qos: .utility)
 
+    /// 内存紧张时只清内存图，磁盘缓存保留（下次还能秒读）。
+    func clearMemory() { cache.removeAllObjects() }
+
     /// 储存空间页「清理缓存」
     func clear() async -> Bool {
         cache.removeAllObjects()
@@ -26,8 +29,10 @@ final class ImageCache {
     }
 
     init() {
-        cache.countLimit = 300
-        cache.totalCostLimit = 200 * 1024 * 1024 // 200MB
+        cache.countLimit = 200
+        // 200MB 会让截图/切后台时系统内存压缩更吃力；100MB 对列表滚动已足够，
+        // 磁盘缓存仍是 500MB，命中后从后台读盘补齐。
+        cache.totalCostLimit = 100 * 1024 * 1024 // 100MB
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         diskDir = caches.appendingPathComponent("ImageCache", isDirectory: true)
         try? FileManager.default.createDirectory(at: diskDir, withIntermediateDirectories: true)

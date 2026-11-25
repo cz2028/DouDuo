@@ -9,10 +9,25 @@ import UIKit
 enum DYFirstFrame {
     private static let mem = NSCache<NSString, UIImage>()
     private static var pending: Set<String> = []
+
+    /// 原来 mem 没有任何上限，每刷一条就加一张 720×1280 解码图且从不清理。
+    /// 按字节计费：8 张约 25~30MB，切后台/截图时不会再占着大块内存。
+    private static var configured = false
+    private static func configureIfNeeded() {
+        guard !configured else { return }
+        configured = true
+        mem.countLimit = 8
+        mem.totalCostLimit = 30 * 1024 * 1024
+    }
     /// 解码队列：并发 2，避免抢当前视频的带宽
     private static let queue = DispatchQueue(label: "douduo.firstframe", qos: .utility, attributes: .concurrent)
 
-    static func cached(_ id: String) -> UIImage? { mem.object(forKey: id as NSString) }
+    static func clearMemory() { mem.removeAllObjects() }
+
+    static func cached(_ id: String) -> UIImage? {
+        configureIfNeeded()
+        return mem.object(forKey: id as NSString)
+    }
 
     /// 当前页及其后若干条准备首帧（已在内存/在解的跳过）
     static func prefetch(_ items: [DYAweme], from index: Int, ahead: Int = 3) {
@@ -31,7 +46,10 @@ enum DYFirstFrame {
                 let generated = decode(url)
                 DispatchQueue.main.async {
                     pending.remove(id)
-                    if let generated { mem.setObject(generated, forKey: id as NSString) }
+                    if let generated {
+                        let cost = generated.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+                        mem.setObject(generated, forKey: id as NSString, cost: cost)
+                    }
                 }
             }
         }

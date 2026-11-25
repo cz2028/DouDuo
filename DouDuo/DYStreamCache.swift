@@ -71,12 +71,15 @@ enum DYNetPolicy {
 
     nonisolated static func plan(cellular: Bool, wifiSaver: Bool, cellSaver: Bool, streaming: Bool, limit: Int) -> Plan {
         let n = min(max(limit, 1), 10)
+        // 预热播放器是最贵的常驻对象（每个都带 AVPlayer + 图层 + 解码会话）。
+        // 缓存条数可以留 10，但同时活着的播放器最多 4 个，够覆盖滑动窗口且不再堆十几个。
+        let players = min(n, 4)
         // 关了边下边播：没有「只下开头」这回事，按老办法整条下
-        guard streaming else { return Plan(lowQuality: false, preload: n, whole: n) }
+        guard streaming else { return Plan(lowQuality: false, preload: players, whole: n) }
         if cellular {
             return cellSaver ? Plan(lowQuality: true, preload: 1, whole: 0) : Plan(lowQuality: false, preload: 2, whole: 2)
         }
-        return Plan(lowQuality: false, preload: n, whole: wifiSaver ? 0 : n)
+        return Plan(lowQuality: false, preload: players, whole: wifiSaver ? 0 : n)
     }
 
     static var current: Plan {

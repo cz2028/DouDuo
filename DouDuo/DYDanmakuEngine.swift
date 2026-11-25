@@ -96,8 +96,29 @@ final class DYDanmakuEngineView: UIView {
         backgroundColor = .clear
         clip.masksToBounds = true
         layer.addSublayer(clip)
+        // 切后台时立刻停 DisplayLink，不等 0.25s timeObserver 间接把 clock.playing 改成 false。
+        // 原来后台还可能再跑几帧，正好撞上 iOS 27 生成应用快照。
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillResign),
+                                               name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive),
+                                               name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(releaseImageCache),
+                                               name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        stop()
+    }
+
+    @objc private func appWillResign() { stop() }
+    @objc private func appDidBecomeActive() { if clock.playing && hasWork { start() } }
+    /// 内存紧张时只丢位图缓存；在屏 layer 已持有 CGImage，不影响当前显示。
+    @objc private func releaseImageCache() {
+        images.removeAll(keepingCapacity: false)
+        sizes.removeAll(keepingCapacity: false)
+        imageOrder.removeAll(keepingCapacity: false)
+    }
 
     func update(items: [DYDanmaku], clock c: DYDanmakuClock, regionTop: CGFloat, regionHeight: CGFloat,
                 lanes l: Int, density: DYDanmakuPolicy.Density, deduplicate dd: Bool) {

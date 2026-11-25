@@ -2,6 +2,24 @@ import SwiftUI
 import UIKit
 import AVFoundation
 
+/// 内存警告时主动丢掉「可重建」的图片缓存，避免 iOS 27 在截图/切应用时被迫做内存压缩。
+/// 磁盘缓存保留，下一帧从后台读回即可。
+private enum DYMemoryPressureGuard {
+    private static var token: NSObjectProtocol?
+    static func install() {
+        guard token == nil else { return }
+        token = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in
+                DYFirstFrame.clearMemory()
+                ImageCache.shared.clearMemory()
+                DYChatSnapshotCache.shared.clearMemory()
+            }
+        }
+    }
+}
+
 /// 前后台过渡用 AppDelegate。Scene 的 onChange 在部分切后台路径下不触发。
 /// 短视频仍在这里暂停。直播继续或静音由「后台直播声音」在同一条生命周期里决定。
 final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
@@ -23,6 +41,7 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         // 不让 VLC（推荐直播卡）在前台关掉音频会话，否则下一条短视频开播后会被系统停住
         DDAudioSessionGuard.install()
+        DYMemoryPressureGuard.install()
         #if DEBUG
         enum DYVideoCacheProbe {
             static func anyLocal() -> URL? {

@@ -44,6 +44,8 @@ final class DYAmbientFrameView: UIView {
         kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
     private weak var attachedItem: AVPlayerItem?
     private var link: CADisplayLink?
+    /// 切后台立刻停取帧：原来靠 active/window 变化间接停止，系统做快照时还可能跑几帧图像处理。
+    private var backgrounded = false
     private static let ci = CIContext(options: [.cacheIntermediates: false])
     private static let queue = DispatchQueue(label: "douduo.ambient", qos: .utility)
     /// 上一帧还没处理完就不取新帧（不堆积）
@@ -63,9 +65,19 @@ final class DYAmbientFrameView: UIView {
         dimView.backgroundColor = UIColor.black.withAlphaComponent(dim)
         addSubview(imageView)
         addSubview(dimView)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillResign),
+                                               name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive),
+                                               name: UIApplication.didBecomeActiveNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
-    deinit { link?.invalidate(); attachedItem?.remove(output) }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        link?.invalidate(); attachedItem?.remove(output)
+    }
+
+    @objc private func appWillResign() { backgrounded = true; updateLink() }
+    @objc private func appDidBecomeActive() { backgrounded = false; updateLink() }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -92,7 +104,7 @@ final class DYAmbientFrameView: UIView {
     private func updateLink() {
         // 发热（serious 及以上）时停掉环境光取帧：背景留在最后一帧，不再每秒做图像处理（抖音同款发热降载）
         let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
-        if active && window != nil && !hot && !DDPerfExperiment.off("AMBIENT") {
+        if active && window != nil && !backgrounded && !hot && !DDPerfExperiment.off("AMBIENT") {
             guard link == nil else { return }
             let l = CADisplayLink(target: DYAmbientTick(self), selector: #selector(DYAmbientTick.tick))
             // 环境光不用 60 帧，12 帧左右看着就是连续的

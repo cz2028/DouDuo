@@ -3477,6 +3477,9 @@ struct DYForwardOfficialScreen: View {
     private var navigationGeneration = UUID()
     private var lastRemoteRefresh: Date?
     private var opening: Task<Void, Never>?
+    /// 转发面板关掉 20 秒后释放 WKWebView（一个独立 WebContent 进程）。
+    /// 原来 retainedWeb 只有换账号才清，长期多占一个进程的内存。
+    private var webReleaseTask: Task<Void, Never>?
     init(nativeOnly: Bool = false) {
         self.nativeOnly = nativeOnly
         #if DEBUG && targetEnvironment(simulator)
@@ -3612,10 +3615,28 @@ struct DYForwardOfficialScreen: View {
         message = "已取消，尚未发送"
     }
 
-    func stop() { cancelPreparation(); opening?.cancel(); opening = nil; web?.stopLoading() }
+    func stop() {
+        cancelPreparation(); opening?.cancel(); opening = nil; web?.stopLoading()
+        scheduleWebRelease()
+    }
+    fileprivate func keepWebAlive() { webReleaseTask?.cancel(); webReleaseTask = nil }
+    private func scheduleWebRelease() {
+        webReleaseTask?.cancel()
+        webReleaseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.web?.stopLoading()
+            self.web?.navigationDelegate = nil
+            self.web?.uiDelegate = nil
+            self.web?.removeFromSuperview()
+            self.web = nil
+            self.retainedWeb = nil
+        }
+    }
     /// 温启动：网页仍在上一条作品且分享组件已就绪，只做一次差异扫描，不重新加载页面。
     func warmPanel() {
         guard let web, web.url?.lastPathComponent == expectedID else { return }
+        keepWebAlive()
         openPanel()
     }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -3918,6 +3939,7 @@ private struct DYForwardWebContainer: UIViewRepresentable {
     @ObservedObject var model: DYForwardWebModel
     let url: URL
     func makeUIView(context: Context) -> WKWebView {
+        model.keepWebAlive()
         // 复用上次打开时的只读官网上下文：朋友数据与安全SDK都不必重新加载。
         if let existing = model.retainedWeb {
             model.web = existing

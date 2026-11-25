@@ -2075,8 +2075,13 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         .onReceive(bridge.$signReady) { ok in if ok { refillIfStuck(reason: "sign") } }
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refillIfStuck(reason: "timer") }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            // 只更新内存里的当前进度，让已有的 0.3s 防抖写盘自然完成。
+            // 原来这里同步 flush() 会在系统做快照的同一帧编码全量 JSON + 原子写盘，切应用立刻卡。
             saveSession()
-            DYFeedSession.flush()   // 立即落盘，不等 0.3s 防抖
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            // 快照栅栏之后再落盘，避开 willResignActive 那帧。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { DYFeedSession.flush() }
         }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
             let threads = DYThreadGuard.sample()
@@ -3353,8 +3358,11 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         .onReceive(bridge.$signReady) { ok in if ok { refillIfStuck(reason: "sign") } }
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refillIfStuck(reason: "timer") }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            // 只更新内存进度；全量 JSON 落盘推迟到 didEnterBackground 之后，避开系统快照窗口。
             saveSession()
-            DYFeedSession.flush()   // 立即落盘，不等 0.3s 防抖
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { DYFeedSession.flush() }
         }
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
             if DDPlayback.shared.appIsActive { saveSession() }

@@ -35,8 +35,16 @@ final class DYChatSnapshotCache {
     private let io = DispatchQueue(label: "douduo.chat-snapshot.io", qos: .utility)
 
     private init() {
-        memory.countLimit = 40
+        // 原来是 40 张整屏图且只按张数限制，没有字节上限；截图/切后台时这块可能占几百 MB。
+        memory.countLimit = 12
+        memory.totalCostLimit = 40 * 1024 * 1024
     }
+
+    private static func cost(of img: UIImage) -> Int {
+        img.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+    }
+
+    func clearMemory() { memory.removeAllObjects() }
 
     func key(scope: String, chatID: String, size: CGSize, dark: Bool) -> Key? {
         guard !scope.isEmpty, !chatID.isEmpty, size.width > 10, size.height > 10 else { return nil }
@@ -48,7 +56,7 @@ final class DYChatSnapshotCache {
         if let hit = memory.object(forKey: key.file as NSString) { return hit }
         let url = dir.appendingPathComponent(key.file)
         guard let data = try? Data(contentsOf: url), let img = UIImage(data: data, scale: UIScreen.main.scale) else { return nil }
-        memory.setObject(img, forKey: key.file as NSString)
+        memory.setObject(img, forKey: key.file as NSString, cost: Self.cost(of: img))
         return img
     }
 
@@ -62,7 +70,7 @@ final class DYChatSnapshotCache {
             web.takeSnapshot(with: config) { image, _ in cont.resume(returning: image) }
         }
         guard let img else { return }
-        memory.setObject(img, forKey: key.file as NSString)
+        memory.setObject(img, forKey: key.file as NSString, cost: Self.cost(of: img))
         let url = dir.appendingPathComponent(key.file)
         let d = dir
         io.async {

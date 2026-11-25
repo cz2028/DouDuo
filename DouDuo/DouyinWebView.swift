@@ -535,7 +535,14 @@ struct DouyinWebContainer: UIViewRepresentable {
     /// WKUserContentController 强持有 message handler，handler 又强持有 model；
     /// 视图销毁时若不移除，model 及其 KVO 观察者会一直被吊住（多次打开网页/私信页累积）。
     static func dismantleUIView(_ uiView: WKWebView, coordinator: ()) {
-        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "ddMsg")
+        let ucc = uiView.configuration.userContentController
+        ucc.removeScriptMessageHandler(forName: "ddMsg")
+        // DEBUG 探针的 handler 强持有单例，视图销毁时不移除会连着整个 WKWebView 一起吊住。
+        #if DEBUG
+        ucc.removeScriptMessageHandler(forName: DYKeyStateProbe.handlerName)
+        ucc.removeScriptMessageHandler(forName: DYIMProbe.handlerName)
+        #endif
+        uiView.stopLoading()
     }
 
     static func instantiate(model: DouyinWebModel, zoom: Double, start: URL, includeProbe: Bool = false,

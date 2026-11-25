@@ -96,11 +96,12 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
     }
 
     private var idleTask: Task<Void, Never>?
-    /// 闲 90 秒就卸掉网页，不占内存
+    /// 闲 25 秒就卸掉网页：每个 WKWebView 一个独立 WebContent 进程，90 秒太久，
+    /// 截图/切应用时这些进程一起占着内存会放大系统卡顿。
     func scheduleIdleUnload() {
         idleTask?.cancel()
         idleTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 90_000_000_000)
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
             guard let self, !Task.isCancelled else { return }
             self.web?.removeFromSuperview()
             self.web?.navigationDelegate = nil

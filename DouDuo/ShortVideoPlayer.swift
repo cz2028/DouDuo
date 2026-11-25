@@ -171,16 +171,18 @@ final class DDPlayback {
         #endif
         stops.forEach { $0() }
         if !Self.bgPlay {   // 后台播放开着时声音引擎要继续出声
+            // 切后台那一帧系统正在栅格化快照，绝不能用 main.sync 把调用线程钉在主线程上。
+            // 非主线程统一异步派发；调用方不等待，避免整帧卡住。
             if Thread.isMainThread {
                 MainActor.assumeIsolated { DDAudioEngineHub.shared.pauseAll() }
             } else {
-                DispatchQueue.main.sync { MainActor.assumeIsolated { DDAudioEngineHub.shared.pauseAll() } }
+                DispatchQueue.main.async { MainActor.assumeIsolated { DDAudioEngineHub.shared.pauseAll() } }
             }
         }
         let keepSession = Self.bgPlay || retainers.contains { $0() }
         if !keepSession {
             if Thread.isMainThread { MainActor.assumeIsolated { DDAudioKeepAlive.release() } }
-            else { DispatchQueue.main.sync { MainActor.assumeIsolated { DDAudioKeepAlive.release() } } }
+            else { DispatchQueue.main.async { MainActor.assumeIsolated { DDAudioKeepAlive.release() } } }
             DDAudioSessionGuard.allowDeactivate {
                 try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             }
@@ -818,10 +820,9 @@ struct PlayerPage: View {
             pageLife.alive = false
             teardown()
         }
-        // 切后台 / 来电 / 下拉控制中心立刻停声（否则退出 App 声音还在响）
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            pauseForBackground()
-        }
+        // willResignActive 的暂停统一由 DouDuoAppDelegate → DDPlayback.pauseForInactivity() 走 stoppers。
+        // 这里原本每个播放器再 pauseForBackground() 一次，和全局暂停重复；切后台瞬间多轮 pause +
+        // savePosition 正好撞上系统快照，是「切应用立刻卡」的放大器，已去掉。
         .onReceive(NotificationCenter.default.publisher(for: DDAudioSessionGate.lostNotification)) { _ in
             resumeIfStolen()
         }
@@ -835,7 +836,7 @@ struct PlayerPage: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             DDAudioSessionGate.invalidate()
             pictureInPicture.didEnterBackground()
-            pauseForBackground()
+            // 暂停仍由 DDPlayback.pauseAll() 统一处理，不再逐页重复 pause。
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             // 被信息页/我的/设置等盖住时不许自己起播：以前每个播放器都直接监听回前台并恢复，
