@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-27         # 项目要求 Xcode 27.2 / iOS 27.2 SDK（docs/duo-redesign-plan.md）
+    runs-on: xcode-27         # GitHub 官方标签；自带 Xcode 27.2 / iOS 27.2 SDK（项目要求）
     timeout-minutes: 60
 
     steps:
