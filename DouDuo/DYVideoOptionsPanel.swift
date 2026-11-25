@@ -80,30 +80,18 @@ struct DYVideoOptionsPanel: View {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 6) {
                                     ForEach(DYPlaybackRates.presets, id: \.self) { rate in
-                                        Button {
+                                        let selected = abs(playbackRate - rate) < 0.01
+                                        rateChip(DYPlaybackRates.title(rate), selected: selected) {
                                             playbackRate = rate
-                                        } label: {
-                                            Text(DYPlaybackRates.title(rate))
-                                                .font(.subheadline.weight(abs(playbackRate - rate) < 0.01 ? .semibold : .regular))
-                                                .foregroundStyle(.primary)
-                                                .frame(width: 52, minHeight: 44)
-                                                .background(.black.opacity(abs(playbackRate - rate) < 0.01 ? 0.30 : 0.12), in: .capsule)
-                                                .contentShape(Rectangle())
                                         }
                                         .accessibilityLabel(rate == 1 ? "正常速度" : "\(rate) 倍速")
-                                        .accessibilityAddTraits(abs(playbackRate - rate) < 0.01 ? .isSelected : [])
+                                        .accessibilityAddTraits(selected ? .isSelected : [])
                                         .accessibilityIdentifier("douyin.options.rate.\(rate)")
                                     }
-                                    Button {
+                                    let isCustom = DYPlaybackRates.isCustom(playbackRate)
+                                    rateChip(isCustom ? String(format: "%.2g", playbackRate) : "自选", selected: isCustom) {
                                         customRateText = String(format: "%g", playbackRate)
                                         showCustomRate = true
-                                    } label: {
-                                        Text(DYPlaybackRates.isCustom(playbackRate) ? String(format: "%.2g", playbackRate) : "自选")
-                                            .font(.subheadline.weight(DYPlaybackRates.isCustom(playbackRate) ? .semibold : .regular))
-                                            .foregroundStyle(.primary)
-                                            .frame(width: 52, minHeight: 44)
-                                            .background(.black.opacity(DYPlaybackRates.isCustom(playbackRate) ? 0.30 : 0.12), in: .capsule)
-                                            .contentShape(Rectangle())
                                     }
                                     .accessibilityLabel("自定义倍速")
                                     .accessibilityIdentifier("douyin.options.rate.custom")
@@ -163,6 +151,21 @@ struct DYVideoOptionsPanel: View {
             }
         } message: {
             Text("输入 0.1 到 4.0 之间的倍速，例如 0.3、1.8、3.0。")
+        }
+    }
+
+    /// 单独抽出，避免 SwiftUI 在 ForEach 内对复合 modifier 链做超长类型推断。
+    private func rateChip(_ title: String, selected: Bool,
+                          action: @escaping () -> Void) -> some View {
+        let opacity: Double = selected ? 0.30 : 0.12
+        return Button(action: action) {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(selected ? .semibold : .regular)
+                .foregroundStyle(.primary)
+                .frame(width: 52, minHeight: 44)
+                .background(Capsule().fill(Color.black.opacity(opacity)))
+                .contentShape(Rectangle())
         }
     }
 
