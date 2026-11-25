@@ -1088,7 +1088,17 @@ enum DYSaver {
     private static func downloadFile(_ u: URL, ext: String) async throws -> URL {
         var r = URLRequest(url: u)
         DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
-        let (temp, resp) = try await URLSession.shared.download(from: r)
+        // download(from:) 只收 URL；带 DYMedia 请求头必须用 URLRequest + downloadTask。
+        let (temp, resp): (URL, URLResponse) = try await withCheckedThrowingContinuation { cont in
+            URLSession.shared.downloadTask(with: r) { url, response, error in
+                if let error { cont.resume(throwing: error); return }
+                guard let url, let response else {
+                    cont.resume(throwing: DYError.bad("下载失败：无响应"))
+                    return
+                }
+                cont.resume(returning: (url, response))
+            }.resume()
+        }
         if let h = resp as? HTTPURLResponse, h.statusCode >= 400 {
             try? FileManager.default.removeItem(at: temp)
             throw DYError.bad("下载失败 HTTP \(h.statusCode)")
