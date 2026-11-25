@@ -1307,22 +1307,43 @@ private struct DouyinBridgeHost: UIViewRepresentable {
 /// 当前条后面 N 条提前建好 AVPlayer 并缓冲开头几秒（不出声、不播放），滑到时页面直接接管 → 秒开。
 /// 封面同时预取。窗口外的立即释放（硬解码会话有限，不能无限开）。
 @MainActor
+/// 播放器预热池（解码槽位模型）。
+///
+/// 以前这里按「预缓存数量」建 4~5 个 AVPlayer，再加身后那条，屏幕外同时躺着 5 路解码会话。
+/// AVPlayer 对象本身不贵，贵的是它挂上 readyToPlay 的 item 之后 mediaserverd 为它建的
+/// 独立解码会话 + IOSurface 池（1080×1920 一路约 15~30MB），而且一直占着不释放。
+/// iOS 27 截屏 / 切后台时，系统要把窗口里所有 surface 合成一张图、再分配大块抓帧缓冲，
+/// 内存基线高就直接整机卡顿 —— 这就是「播着播着按截屏键，整个系统卡一下」的来源。
+///
+/// 现在改成「解码槽位」：同时最多 `slotLimit` 个（当前条 + 下一条）。
+/// - 数据预取交给 `DYVideoCache.focus` 整条下到磁盘，走磁盘 IO，不占解码器
+/// - 本地已整条缓存的条目直接算「可播」，分页器照常放行，不会因为没预热被弹回
+/// - 更远的条目等滑到再占槽（本地文件起播 100~300ms），不再养几路空转的解码会话
 final class DYPreloader {
-    /// 提前暖几条 = 设置里的缓存条数（5 条缓存就暖 5 个播放器，上限 10）；
-    /// 只有过热/极热才降档省电
-    static var ahead: Int {
-        // 按流量策略：Wi-Fi 跟「预缓存数量」（上限 10，跟分页器挂载页数一致）；用流量时省流量开 1 条、关 2 条
-        // （老板 11-24：「我要拉 10 个就 10 个」；以前边下边播时写死 3 条，设了 10 也只备 3 条）
-        DYNetPolicy.current.preload
+    /// 同时存在的解码槽数量：当前播放 + 下一条热备。
+    /// 再加就是纯烧内存 —— 屏幕外那几路什么都不做，却各自占着一条解码会话。
+    private static let slotLimit = 2
+
+    /// 日志里的「暖机条数」
+    static var ahead: Int { slotLimit }
+
+    /// 一个解码槽：一个 AVPlayer + 它此刻挂着的条目 id。
+    /// `player` 是 var：页面自己建的那个播放器也能被槽收下来复用，
+    /// 否则「滑走那页还占着槽」时会多出一路没人管的解码会话（稳态又回到 3~4 路）。
+    private final class Slot {
+        var player: AVPlayer
+        var id: String?
+        var handedOut = false
+        init() {
+            player = AVPlayer()
+            player.isMuted = true
+            player.automaticallyWaitsToMinimizeStalling = true
+        }
     }
-    /// 最近几条做「预解码首帧 + preroll」（更远的只备播放器）；但**数据一到就登记可播**，
-    /// 这样「下一条没加载好就滑不动」不会变成每次都要滑两次
-    /// 只给紧挨着的下一条预解码首帧（preroll 会把解码器跑起来）；再往后的只备好数据，划到前一条时自然轮到它。
-    /// 以前 5 条都 preroll = 屏外同时开着好几个解码器（抖音做法：只解码可见页 + 下一页）
-    private var players: [String: AVPlayer] = [:]
-    private var handedOut: Set<String> = []
+
+    private var slots: [Slot] = []
     private var obs: [String: NSKeyValueObservation] = [:]
-    /// 当前预热窗口里的条目（页面归还播放器时用来判断还要不要留着）
+    /// 预热窗口（当前 -1 … 当前 +1）：页面来 take 时按 id 找条目
     private var window: [String: DYAweme] = [:]
     private var last: (items: [DYAweme], index: Int, localOnly: Bool)?
     #if DEBUG
@@ -1331,200 +1352,240 @@ final class DYPreloader {
     let disabled = false
     #endif
 
+    // MARK: 内存压力降载
+
+    private final class WeakRef {
+        weak var value: DYPreloader?
+        init(_ v: DYPreloader) { value = v }
+    }
+    private static var liveRefs: [WeakRef] = []
+
+    init() { Self.liveRefs.append(WeakRef(self)) }
+
+    /// 系统报内存警告时，把所有活跃预热池里「不在播」的槽一起卸掉。
+    /// 截屏 / 切后台时如果已经处在内存压力下，系统要先压缩再回收，整机就卡一下；
+    /// 主动放掉屏幕外那几路解码会话是最直接的止血（它们本来就只是热备）。
+    @MainActor
+    static func trimAll() {
+        liveRefs.removeAll { $0.value == nil }
+        for r in liveRefs { r.value?.trimToCurrent() }
+    }
+
+    /// 只留当前正在播的那个槽，其余卸 item 释放解码会话；不销毁槽对象，滑到再装回去
+    func trimToCurrent() {
+        guard let last, last.items.indices.contains(last.index) else { clear(); return }
+        let cur = last.items[last.index].id
+        for s in slots where !s.handedOut {
+            if let id = s.id, id != cur { detach(s) }
+        }
+    }
+
     func update(_ items: [DYAweme], current index: Int, localOnly: Bool = false) {
         guard !disabled, items.indices.contains(index) else { return }
-        let th = ProcessInfo.processInfo.thermalState
-        let ahead = th == .critical ? 1 : (th == .serious ? min(2, Self.ahead) : Self.ahead)
-        let lo = index + 1, hi = min(items.count - 1, index + ahead)
-        let forward = lo <= hi ? Array(items[lo...hi]) : []
-        // 身后留 1 条（= 刚划过的那条）：不留的话，上一条页面被惰性分页回收时播放器没人接，
-        // 滑回来是彻底冷建（重新建播放器 + 重新缓冲），真机上就是「黑屏十几秒才出画面」。
-        // 留着它，页面回收时 giveBack 收得下，滑回来直接接上已就绪的 item，秒起播。
-        let behind = index > 0 ? [items[index - 1]] : []
-        let window = behind + forward
-        /// 真正要新建播放器的范围（身后那条只是保活，没有就顺便建一个，划回来也快）
-        let ids = Set(window.map(\.id))
-        self.window = Dictionary(window.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         last = (items, index, localOnly)
-        // 离开窗口的：释放没被领走的；已领走的只要离当前 ≥2 条就不再记账（页面已经销毁）
-        for (id, p) in players where !ids.contains(id) { release(id, p) }
-        let near = Set(items[max(0, index - 1)...min(items.count - 1, index + 1)].map(\.id))
-        handedOut = handedOut.filter { near.contains($0) || ids.contains($0) }
-        // 只有紧挨着的「下一条」预解码首帧：window 现在含身后那条，不能再用窗口下标判断
-        let nextID = lo <= hi ? items[lo].id : ""
-        for a in window where players[a.id] == nil && !handedOut.contains(a.id) {
-            guard a.images.isEmpty, let s = a.play, let url = URL(string: s) else {
-                if let c = a.images.first.flatMap(URL.init(string:)) { Task { _ = await ImageCache.shared.load(c) } }
-                // 图文没有视频要解码，直接算「可播」，否则分页器会一直把它拦下（图文页根本划不过去）
-                DYReadiness.mark(a.id)
+        // 目标集合：当前 + 下一条。过热时只留当前（再热下去连下一条都不建）
+        let th = ProcessInfo.processInfo.thermalState
+        var targets: [DYAweme] = [items[index]]
+        if th != .critical, index + 1 < items.count { targets.append(items[index + 1]) }
+        let targetIDs = Set(targets.map(\.id))
+        var around: [DYAweme] = []
+        if index > 0 { around.append(items[index - 1]) }
+        around += targets
+        window = Dictionary(around.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        // 1) 腾槽：没被页面领走、又不在目标集合里的，立刻卸 item 释放解码会话
+        for s in slots where !s.handedOut {
+            if let id = s.id, !targetIDs.contains(id) { detach(s) }
+        }
+
+        // 2) 目标条目装槽。槽里已经绑着这条就一律跳过 —— 不管是空闲还是被页面领走了：
+        //    正在播的那条如果在这里被重新 replaceCurrentItem，画面会当场断掉。
+        for (i, a) in targets.enumerated() {
+            if slots.contains(where: { $0.id == a.id }) { continue }
+            // 槽只有 2 个：都被占着时回收「身后那条」的槽。
+            // 它已经划走、页面不可见；回滑时本地整条缓存在，重建 100~300ms，比让下一条
+            // 抢不到槽被分页器弹回（用户体感是「滑不动」）划算得多。
+            var slot = freeSlot()
+            if slot == nil, index > 0, items[index - 1].id != a.id {
+                slot = reclaimSlot(dropping: items[index - 1].id)
+            }
+            guard let slot, let item = makeItem(a, localOnly: localOnly) else {
+                // 没有空槽 / 图文 / 离线缺文件：本地已缓存就直接算可播，别让分页器拦人
+                markIfCached(a, localOnly: localOnly)
                 continue
             }
-            let local = DYVideoCache.localURL(a.id)
-            if localOnly, local == nil {
-                DYReadiness.mark(a.id)
-                continue
-            }
-            // 边下边播：预热的条经 ddstream 只取开头几秒（DYStreamPlan.horizon），划到才继续往后下
-            let asset = local.map { AVURLAsset(url: $0) } ?? DYStream.asset(for: a, remote: url)
-            let item = AVPlayerItem(asset: asset)
-            // 紧挨着的下一条要「已经加载好」：不限制前向缓冲（0 = 交给系统，能把拿到的都先拿到）；
-            // 再后面的留 15 秒够起播，省流量（边下边播时实际下多少由 ddstream 的允许范围决定）
-            item.preferredForwardBufferDuration = index + 1 < items.count && a.id == items[index + 1].id ? 0 : 15
-            let p = AVPlayer(playerItem: item)
-            p.isMuted = true
-            p.automaticallyWaitsToMinimizeStalling = true
-            players[a.id] = p
-            DDAudioPreloadPool.shared.prewarm(id: a.id, asset: asset, item: item)
-            // 数据一到位就登记「可播」——分页器据此放行（这里是预热池，跟页面挂没挂载无关，
-            // 所以窗口内的条目在滑到之前就已经是 ready 了）
-            obs[a.id] = item.observe(\.status, options: [.new]) { [weak self, weak p] it, _ in
-                if it.status == .failed {
-                    // 预热失败（之前直接把坏播放器交给页面 → 被判未就绪弹回 3 次再从零建，老板感觉「加载又慢了」）
-                    let e = it.error as NSError?
-                    let src = (it.asset as? AVURLAsset)?.url
-                    DYLiveModel.log("DDPRELOADFAIL \(a.id.suffix(6)) local=\(src?.isFileURL ?? false) err=\(e?.domain ?? "-")/\(e?.code ?? 0) under=\((e?.userInfo[NSUnderlyingErrorKey] as? NSError).map { "\($0.domain)/\($0.code)" } ?? "-")")
-                    if localOnly {
-                        DYReadiness.mark(a.id)
-                    } else {
-                        DispatchQueue.main.async { [weak self, weak p] in
-                            guard let self, let p, self.players[a.id] === p else { return }
-                            self.retry(a, remote: url, wasLocal: src?.isFileURL ?? false)
-                        }
-                    }
-                    return
-                }
-                guard it.status == .readyToPlay else { return }
-                DYReadiness.mark(a.id)
-                // 只有下一条再补一次 preroll，把首帧解码出来，滑过去就是真画面
-                if a.id == nextID {
-                    DispatchQueue.main.async { p?.preroll(atRate: 1) { _ in } }
-                }
-            }
-            if let c = a.cover.flatMap(URL.init(string:)) { Task { _ = await ImageCache.shared.load(c) } }
+            attach(slot, id: a.id, item: item, preroll: i > 0)
+        }
+
+        // 3) 更远的条目：不占槽，只把「本地整条已缓存」的登记成可播。
+        //    快速连滑时这一条会被分页器检查（DYPagingSpeed 拦「未就绪」），
+        //    本地文件起播很快，没必要拦。
+        if index + 2 < items.count { markIfCached(items[index + 2], localOnly: localOnly) }
+        if index > 0 { markIfCached(items[index - 1], localOnly: localOnly) }
+
+        // 封面走图片缓存，跟播放器无关
+        for a in targets {
+            let c = a.cover ?? a.images.first
+            if let c, let u = URL(string: c) { Task { _ = await ImageCache.shared.load(u) } }
         }
     }
 
-    /// 页面起播时来领；领走后由页面负责释放
+    /// 页面起播时来领
     func take(_ id: String) -> AVPlayer? {
-        guard let p = players[id] else { return nil }
-        // 失败的预热播放器不交给页面（交出去页面就拿着一个坏播放器等超时）
-        if p.currentItem?.status == .failed { return nil }
-        // 底下的边下边播条目被换条后的 trim 清掉了：这个播放器只会一直等数据，
-        // 交给页面就是「滑回来黑屏十几秒」。丢掉它，重新备一份。
-        if let u = (p.currentItem?.asset as? AVURLAsset)?.url, let key = DYStream.id(of: u),
-           DYStreamStore.shared.entry(key) == nil {
-            players.removeValue(forKey: id)
-            obs.removeValue(forKey: id)?.invalidate()
-            p.pause()
-            DYLiveModel.log("DDPRELOAD stale \(id.suffix(6)) 流条目已清 → 重建")
-            if let last {
-                Task { @MainActor [weak self] in
-                    self?.update(last.items, current: last.index, localOnly: last.localOnly)
-                }
-            }
-            return nil
+        guard !disabled else { return nil }
+        // 1) 槽里已经绑着这条：最快路径（item 已 ready、可能已 preroll）
+        if let s = slots.first(where: { $0.id == id && !$0.handedOut }) {
+            guard !isBad(s.player) else { detach(s); return nil }
+            s.handedOut = true
+            return s.player
         }
-        players.removeValue(forKey: id)
-        obs.removeValue(forKey: id)?.invalidate()
-        handedOut.insert(id)
-        return p
+        // 2) 找空槽，按这个 id 现装（滑到第 2、3 条时的路径）
+        guard let a = aweme(id), let item = makeItem(a, localOnly: last?.localOnly == true) else { return nil }
+        var slot = freeSlot()
+        // 两个槽都被页面拿着：回收身后那条（已划走不可见），别让这页自己再建一路解码
+        if slot == nil, let last, last.index > 0, last.items.indices.contains(last.index - 1),
+           last.items[last.index - 1].id != id {
+            slot = reclaimSlot(dropping: last.items[last.index - 1].id)
+        }
+        guard let s = slot else { return nil }
+        guard !isBad(s.player) else { detach(s); return nil }
+        attach(s, id: id, item: item, preroll: false)
+        s.handedOut = true
+        return s.player
     }
 
-    /// 页面还没轮到播就被回收（惰性分页只留屏幕上那一两页）：把领走的播放器还回来，不销毁。
-    /// 以前页面一回收播放器就跟着销毁，而这里还记着「已交给页面」不再重建 →
-    /// 这条永远等不到「可播」，上滑被拦 3 次才放行（真机日志：刚启动时最常见）。
-    /// 返回 false = 不收（已经不在预热窗口 / 播放器坏了），由页面自己销毁。
+    private func aweme(_ id: String) -> DYAweme? {
+        if let a = window[id] { return a }
+        return last?.items.first { $0.id == id }
+    }
+
+    /// 页面被回收：把播放器还给槽（不只是销毁），下次滑回来直接接上
     func giveBack(_ id: String, _ p: AVPlayer) -> Bool {
-        let wasOut = handedOut.remove(id) != nil
-        // 底下的流条目已经没了（被 trim 清掉）：收下也只是养一个永远等数据的播放器
-        var staleStream = false
-        if let u = (p.currentItem?.asset as? AVURLAsset)?.url, let key = DYStream.id(of: u) {
-            staleStream = DYStreamStore.shared.entry(key) == nil
+        guard !disabled else { return false }
+        // 1) 是某个槽自己的播放器：原样归还
+        if let s = slots.first(where: { $0.player === p }) {
+            // 槽已经被别的条目接管：不能再收（收下等于把别人的播放器抢走）
+            guard s.id == id || s.id == nil else { return false }
+            if isBad(p) { detach(s); return false }
+            p.pause()
+            p.isMuted = true
+            s.id = id
+            s.handedOut = false
+            if p.currentItem?.status == .readyToPlay { DYReadiness.mark(id) }
+            refill()
+            return true
         }
-        guard !disabled, !staleStream, window[id] != nil, players[id] == nil,
-              let item = p.currentItem, item.status != .failed,
-              last?.localOnly != true || (item.asset as? AVURLAsset)?.url.isFileURL == true else {
-            // 页面那份没了、这里也没有：窗口内的重新备一份
-            if wasOut, window[id] != nil, players[id] == nil {
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, let last = self.last, self.window[id] != nil else { return }
-                    self.update(last.items, current: last.index, localOnly: last.localOnly)
-                }
-            }
-            return false
-        }
+        // 2) 是页面自己建的播放器（当初没抢到槽）：有空槽就收下来复用。
+        //    不收的话，这路解码会话要等页面销毁才断，稳态会多一路。
+        guard !isBad(p), let s = slots.first(where: { !$0.handedOut }), s.id == nil else { return false }
         p.pause()
         p.isMuted = true
-        players[id] = p
-        if item.status == .readyToPlay {
-            DYReadiness.mark(id)
-        } else {
-            obs[id] = item.observe(\.status, options: [.new]) { [weak self, weak p] it, _ in
-                if it.status == .readyToPlay { DYReadiness.mark(id) }
-                else if it.status == .failed {
-                    DispatchQueue.main.async { [weak self, weak p] in
-                        guard let self, let p, self.players[id] === p else { return }
-                        self.retryReturned(id, player: p)
-                    }
-                }
-            }
-        }
+        s.player = p
+        s.id = id
+        s.handedOut = false
+        if p.currentItem?.status == .readyToPlay { DYReadiness.mark(id) }
+        refill()
         return true
     }
 
-    private func retryReturned(_ id: String, player: AVPlayer) {
-        if last?.localOnly == true {
-            DYReadiness.mark(id)
-            return
+    /// 槽空出来了：给下一条补位。滑走那一页占着槽时，下一条是页面自己建的，
+    /// 这里补一次 update 让它回到槽里，顺带把多出来的那路解码会话收掉。
+    private func refill() {
+        guard let last else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.update(last.items, current: last.index, localOnly: last.localOnly)
         }
-        guard let a = window[id], let s = a.play, let url = URL(string: s) else { return }
-        retry(a, remote: url, wasLocal: (player.currentItem?.asset as? AVURLAsset)?.url.isFileURL ?? false)
     }
 
-    func clear() {
-        for (id, p) in players { release(id, p) }
-        DDAudioPreloadPool.shared.clear()
-        handedOut.removeAll()
-        window = [:]
-        last = nil
-        retried.removeAll()   // 只增不减：长会话会无界增长，切 tab / 内存紧张清掉
+    /// 这个播放器还能不能用：
+    /// - item 已经 failed：永远不会再 readyToPlay
+    /// - item 是 ddstream 资源，但登记条目被换条后的 trim 清掉了：资源加载器找不到条目，
+    ///   AVFoundation 只会干等（真机就是「滑回来黑屏十几秒」）
+    private func isBad(_ p: AVPlayer) -> Bool {
+        guard let item = p.currentItem else { return true }
+        if item.status == .failed { return true }
+        guard let u = (item.asset as? AVURLAsset)?.url, let key = DYStream.id(of: u) else { return false }
+        return DYStreamStore.shared.entry(key) == nil
     }
 
-    /// 预热失败只重试一次：本地文件坏了就改用在线地址，在线失败就再建一次
-    private var retried: Set<String> = []
-    private func retry(_ a: DYAweme, remote: URL, wasLocal: Bool) {
-        guard let old = players[a.id], !retried.contains(a.id) else { return }
-        retried.insert(a.id)
-        release(a.id, old)
-        // 重试一律直连在线地址（ddstream 出问题时的退路）
-        let item = AVPlayerItem(asset: DYMedia.asset(remote))
-        item.preferredForwardBufferDuration = 15
-        let p = AVPlayer(playerItem: item)
-        p.isMuted = true
-        p.automaticallyWaitsToMinimizeStalling = true
-        players[a.id] = p
-        obs[a.id] = item.observe(\.status, options: [.new]) { [weak p] it, _ in
+    private func freeSlot() -> Slot? {
+        if let s = slots.first(where: { !$0.handedOut }) { return s }
+        guard slots.count < Self.slotLimit else { return nil }
+        let s = Slot()
+        slots.append(s)
+        return s
+    }
+
+    /// 抢回某条占着的槽（连页面手里的那个一起收）：那条已经划走不可见，
+    /// 页面之后再来 giveBack 会因为 item 已被卸掉而返回 false，不会再抢回来。
+    private func reclaimSlot(dropping id: String) -> Slot? {
+        guard let s = slots.first(where: { $0.id == id }) else { return nil }
+        let wasHandedOut = s.handedOut
+        detach(s)
+        s.handedOut = false
+        if wasHandedOut { DYLiveModel.log("DDSLOT-RECLAIM \(id.suffix(6)) 让位给下一条") }
+        return s
+    }
+
+    private func attach(_ s: Slot, id: String, item: AVPlayerItem, preroll: Bool) {
+        obs.removeValue(forKey: id)?.invalidate()
+        // 旧条目的观察者也要清掉，否则它把已经离开槽的 id 又 mark 一次
+        if let old = s.id, old != id { obs.removeValue(forKey: old)?.invalidate() }
+        s.id = id
+        s.player.isMuted = true
+        s.player.replaceCurrentItem(with: item)
+        obs[id] = item.observe(\.status, options: [.new]) { [weak s] it, _ in
+            guard let s, s.id == id else { return }
             if it.status == .failed {
-                DYLiveModel.log("DDPRELOADFAIL2 \(a.id.suffix(6)) err=\((it.error as NSError?).map { "\($0.domain)/\($0.code)" } ?? "-")")
-                // 两次都不行就别拦着用户了，放行给页面自己处理
-                DYReadiness.mark(a.id)
+                let e = it.error as NSError?
+                DYLiveModel.log("DDPRELOADFAIL \(id.suffix(6)) err=\(e?.domain ?? "-")/\(e?.code ?? 0)")
+                // 失败就别再拦着用户：放行，页面自己有三级重试
+                DYReadiness.mark(id)
                 return
             }
             guard it.status == .readyToPlay else { return }
-            DYReadiness.mark(a.id)
-            DispatchQueue.main.async { p?.preroll(atRate: 1) { _ in } }
+            DYReadiness.mark(id)
+            if preroll { DispatchQueue.main.async { s.player.preroll(atRate: 1) { _ in } } }
         }
-        DYLiveModel.log("DDPRELOADRETRY \(a.id.suffix(6)) wasLocal=\(wasLocal) → 在线")
+        if item.status == .readyToPlay { DYReadiness.mark(id) }
     }
 
-    private func release(_ id: String, _ p: AVPlayer) {
-        // 播放器都被释放了，就别再说它「可播」（否则分页器会放行到一条其实没准备好的）
-        if !handedOut.contains(id) { DYReadiness.clear(id) }
-        obs.removeValue(forKey: id)?.invalidate()
-        DDAudioPreloadPool.shared.discard(id: id)
-        p.pause()
-        p.replaceCurrentItem(with: nil)
-        players[id] = nil
+    private func detach(_ s: Slot) {
+        if let id = s.id { obs.removeValue(forKey: id)?.invalidate() }
+        s.player.pause()
+        // 只有真正把 item 卸掉，mediaserverd 才会收走那条解码会话和 IOSurface 池
+        s.player.replaceCurrentItem(with: nil)
+        s.id = nil
+    }
+
+    private func makeItem(_ a: DYAweme, localOnly: Bool) -> AVPlayerItem? {
+        guard a.images.isEmpty, let s = a.play, let url = URL(string: s) else { return nil }
+        let local = DYVideoCache.localURL(a.id)
+        if localOnly, local == nil { return nil }
+        let asset = local.map { AVURLAsset(url: $0) } ?? DYStream.asset(for: a, remote: url)
+        let item = AVPlayerItem(asset: asset)
+        // 以前「下一条」写 0（= 交给系统，能拿到的都先拿）：本地缓存落盘之前会把整条挤进
+        // 内存缓冲里。6 秒够起播和接续，剩下的交给 DYVideoCache 下到磁盘。
+        item.preferredForwardBufferDuration = 6
+        return item
+    }
+
+    /// 本地整条已缓存 = 起播足够快，直接登记「可播」，不让分页器拦人
+    private func markIfCached(_ a: DYAweme, localOnly: Bool) {
+        guard a.images.isEmpty else { DYReadiness.mark(a.id); return }
+        if localOnly { DYReadiness.mark(a.id); return }
+        if let local = DYVideoCache.localURL(a.id), FileManager.default.fileExists(atPath: local.path) {
+            DYReadiness.mark(a.id)
+        }
+    }
+
+    func clear() {
+        for s in slots { detach(s) }
+        slots.removeAll()
+        obs.removeAll()
+        DDAudioPreloadPool.shared.clear()
+        window = [:]
+        last = nil
     }
 }
 

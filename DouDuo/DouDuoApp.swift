@@ -15,6 +15,8 @@ private enum DYMemoryPressureGuard {
                 DYFirstFrame.clearMemory()
                 ImageCache.shared.clearMemory()
                 DYChatSnapshotCache.shared.clearMemory()
+                // 屏幕外的预热解码会话也一起放掉：它们只是热备，重建成本远低于被系统压缩一次
+                DYPreloader.trimAll()
             }
         }
     }
