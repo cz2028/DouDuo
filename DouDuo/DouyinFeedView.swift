@@ -4017,6 +4017,8 @@ struct DYUpstreamVideoPage: View {
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
+    /// 右侧功能栏（赞/评论/收藏/搜索/铺满）是否显示。默认开；关掉后画面更干净，常驻小眼睛按钮可切回。
+    @AppStorage("douyin_action_rail_visible_v1") private var railVisible = true
     @State private var heart = false
     @State private var shareCoversOfflineVideo = false
     @State private var saving = false
@@ -4295,29 +4297,44 @@ struct DYUpstreamVideoPage: View {
                 .accessibilityLabel("返回上一层")
                 .accessibilityIdentifier(backIdentifier)
             }
-            VStack(spacing: theme.media.actionItemSpacing) {
-                railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
-                         tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
-                railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
-                railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
-                         tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
-                if !chromeMode.usesRail {
-                    railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
-                }
-                if item.images.isEmpty {
-                    // 有些视频铺满后会裁掉边缘，随手切回完整画面
-                    // 颜色不变，靠图标形态区分：铺满中 = 向内箭头（点了缩回完整画面）；完整画面 = 向外箭头（点了放大铺满）
-                    railItem(autoFit ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", "", tint: fg,
-                             "douyin.fit") {
-                        autoFit.toggle()
-                        onToast?(autoFit ? "铺满：开" : "完整画面")
+            if railVisible {
+                VStack(spacing: theme.media.actionItemSpacing) {
+                    railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
+                             tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
+                    railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
+                    railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
+                             tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
+                    if !chromeMode.usesRail {
+                        railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
+                    }
+                    if item.images.isEmpty {
+                        // 有些视频铺满后会裁掉边缘，随手切回完整画面
+                        // 颜色不变，靠图标形态区分：铺满中 = 向内箭头（点了缩回完整画面）；完整画面 = 向外箭头（点了放大铺满）
+                        railItem(autoFit ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", "", tint: fg,
+                                 "douyin.fit") {
+                            autoFit.toggle()
+                            onToast?(autoFit ? "铺满：开" : "完整画面")
+                        }
                     }
                 }
+                .padding(.vertical, 8)
+                .frame(width: railWidth)
+                .ddMediaGlassCapsule()
+                .frame(width: actionColumnWidth)
+            } else {
+                // 功能栏已隐藏：原位留一颗小眼睛，点一下切回（按钮在隐藏区域之外，不会把自己藏掉）
+                Button { railVisible = true; onToast?("右侧按钮已显示") } label: {
+                    Image(systemName: "eye.slash")
+                        .font(.system(size: theme.media.moreGlyphSize, weight: .regular, design: .rounded))
+                        .foregroundStyle(fg)
+                        .frame(width: 50, height: 50)
+                        .contentShape(Circle())
+                        .ddMediaGlassCircle()
+                }
+                .buttonStyle(.plain)
+                .frame(width: actionColumnWidth)
+                .accessibilityIdentifier("douyin.rail.restore")
             }
-            .padding(.vertical, 8)
-            .frame(width: railWidth)
-            .ddMediaGlassCapsule()
-            .frame(width: actionColumnWidth)
             moreMenu(fg)
         }
         .themeShadow(.mediaLabel)
@@ -4405,6 +4422,8 @@ struct DYUpstreamVideoPage: View {
                     .accessibilityIdentifier("douyin.quick.bgplay")
                 Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     .accessibilityIdentifier("douyin.quick.autonext")
+                Toggle(isOn: $railVisible) { Label("显示右侧功能按钮", systemImage: "eye") }
+                    .accessibilityIdentifier("douyin.quick.rail")
             }
             if bridge != nil {
                 Button("稍后再看", systemImage: "clock") { addWatchLater() }

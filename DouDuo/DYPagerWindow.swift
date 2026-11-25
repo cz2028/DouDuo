@@ -44,56 +44,24 @@ struct DYPagerPlaceholder: View {
 
 /// 竖滑分页的页面列表（三个分页器共用）：当前页立即挂载；挂载窗口的整体平移推迟到滑动收尾、起播之后
 /// （新挂一页 = 建播放器 + 解首帧，卸一页 = 销毁播放器，都在主线程，和起播挤在同一帧就会「卡一下」）。
-///
-/// 性能要点：窗口外的页只放轻量占位（黑底 + 近处封面），不建播放器 / KVO / 通知观察者。
-/// 之前 ForEach(items) 无条件给每一页都挂真页面，刷得越多同时存活的 AVPlayer 越多，
-/// 撞上系统硬解码会话上限后就越滑越卡。挂载窗口现在真正生效了。
 struct DYPagerStack<Page: View>: View {
     let items: [DYAweme]
     let currentID: String?
     @ViewBuilder let page: (DYAweme) -> Page
     var pageAxes: Axis.Set = [.horizontal, .vertical]
-    /// 已挂载窗口的中心。currentID 变化（起播）后平移：新窗口立即生效（保证要起播的页有真播放器），
-    /// 旧窗口延迟 shiftDelay 再拆，避免「建播放器 + 销毁播放器」和起播挤在同一帧。
     @State private var centerID: String?
-    @State private var previousCenterID: String?
+    @State private var shiftToken = 0
     /// 拆旧页延后到动画结束之后（扩窗是即时的）
     static var shiftDelay: TimeInterval { 0.45 }
-
-    private var centerIndex: Int { DYPagerWindow.currentIndex(items, centerID) }
-    private var previousIndex: Int? { previousCenterID.map { DYPagerWindow.currentIndex(items, $0) } }
-
-    private func isMounted(_ index: Int) -> Bool {
-        if DYPagerWindow.mounts(index, current: centerIndex) { return true }
-        if let p = previousIndex, DYPagerWindow.mounts(index, current: p) { return true }
-        return false
-    }
 
     var body: some View {
         // 惰性分页：每帧只重建可见的 1–2 页（之前非惰性版本每帧把已挂载页全部重建，实测主线程一帧掉到 35–45ms）
         LazyVStack(spacing: 0) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                Group {
-                    if isMounted(index) {
-                        page(item)
-                            .containerRelativeFrame(pageAxes)
-                            .id(item.id)
-                    } else {
-                        DYPagerPlaceholder(item: item, showsCover: DYPagerWindow.showsCover(index, current: centerIndex))
-                            .containerRelativeFrame(pageAxes)
-                            .id(item.id)
-                    }
-                }
+            ForEach(items) { item in
+                page(item)
+                    .containerRelativeFrame(pageAxes)
+                    .id(item.id)
             }
-        }
-        .onAppear { centerID = currentID ?? items.first?.id }
-        .task(id: currentID) {
-            guard let new = currentID, new != centerID else { return }
-            previousCenterID = centerID
-            centerID = new
-            try? await Task.sleep(for: .seconds(Self.shiftDelay))
-            guard !Task.isCancelled else { return }
-            previousCenterID = nil
         }
     }
 }
