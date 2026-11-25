@@ -1623,7 +1623,12 @@ final class DYPagedModel: ObservableObject {
 
     /// 下拉刷新：重新拉第一页。拉到了才替换（旧内容先留着，失败也不清空页面）
     func refresh() async {
-        while loading { try? await Task.sleep(for: .milliseconds(100)) }
+        // 风控/CDN 403 时上一次 fetch 可能长时间不返回，之前无限自旋会永久空转 + 耗电
+        for _ in 0..<50 {
+            guard loading, !Task.isCancelled else { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !loading else { return }   // 超时仍未释放就放弃本次刷新
         loading = true
         defer { loading = false }
         do {
@@ -2638,7 +2643,11 @@ struct DYAuthorScreen: View {
         guard hasMore, let item = try? await bridge.awemeDetail(id), item.author.secUid == sec else { return }
         for page in 2...30 {
             guard hasMore, !Task.isCancelled else { break }
-            while loading { try? await Task.sleep(for: .milliseconds(120)) }
+            for _ in 0..<50 {
+                guard loading, !Task.isCancelled else { break }
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+            guard !Task.isCancelled else { break }
             _ = await loadPosts()
             if posts.contains(where: { $0.id == id }) {
                 recentID = id

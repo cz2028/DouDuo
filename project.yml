@@ -35,7 +35,6 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
-        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads: YES
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: 保存视频和图集到相册
         INFOPLIST_KEY_NSCameraUsageDescription: 发布作品时拍摄视频或照片
         INFOPLIST_KEY_NSMicrophoneUsageDescription: 发布作品时录制视频的声音
@@ -45,8 +44,7 @@ targets:
       properties:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
+        # ATS 保持系统默认（仅 HTTPS）：源码无明文 HTTP 请求，全局放开会让携带登录态的流量暴露在中间人风险下
         # 后台播放：默认仍是切后台就停声；只有「更多」菜单里打开「后台播放」才会继续响（代码里按开关判断）
         UIBackgroundModes: [audio]
         # ProMotion：iPhone 默认把 App 限制在 60Hz，必须声明这一项才能跑 120Hz（弹幕滚动、翻页更顺）

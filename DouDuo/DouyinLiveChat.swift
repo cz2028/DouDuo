@@ -195,7 +195,8 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
             }
             self.composerReady = ready
             if self.ticks % 10 == 1 {
-                DYLiveModel.log("DDCHAT tick=\(self.ticks) new=\(arr.count) first=\(arr.first?.joined(separator: "：") ?? "-")")
+                // 只记条数，不记正文（日志落在 Documents/ddlog.txt，聊天内容属隐私）
+                DYLiveModel.log("DDCHAT tick=\(self.ticks) count=\(arr.count)")
                 #if DEBUG
                 if arr.isEmpty || ProcessInfo.processInfo.environment["DOUDUO_CHATPROBE"] == "1" {
                     self.web.evaluateJavaScript(Self.diagJS) { d, _ in DYLiveModel.log("DDCHAT diag \(String(describing: d ?? "nil").prefix(3200))") }

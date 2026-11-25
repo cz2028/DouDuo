@@ -399,8 +399,18 @@ final class DYStreamStore: @unchecked Sendable {
                 drop(key)
             }
         }
-        if removed > 0 {
-            DYLiveModel.log("DDSTREAM trim removed=\(removed) freed=\(freed / 1024 / 1024)MB kept=\(kept) keptMB=\(keptBytes / 1024 / 1024)")
+        // items/playhead 之前只写不删：刷得越多内存里堆的 DYAweme 越多（卡顿累积源之一）。
+        // 与 entries 同步裁剪，只留还活着的 + 当前条，避免缓存字典无界增长。
+        lock.lock()
+        let liveIDs = Set(entries.values.map(\.id))
+        let keepCurrent = current
+        let beforeItems = items.count
+        items = items.filter { id, _ in liveIDs.contains(id) || id == keepCurrent }
+        playhead = playhead.filter { id, _ in liveIDs.contains(id) || id == keepCurrent }
+        let afterItems = items.count
+        lock.unlock()
+        if removed > 0 || beforeItems != afterItems {
+            DYLiveModel.log("DDSTREAM trim removed=\(removed) freed=\(freed / 1024 / 1024)MB kept=\(kept) keptMB=\(keptBytes / 1024 / 1024) items \(beforeItems)→\(afterItems)")
         }
     }
 

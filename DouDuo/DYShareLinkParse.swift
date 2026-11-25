@@ -21,11 +21,14 @@ enum DYShareLink {
     }
 
     static func target(for url: URL) -> Target? {
-        guard let host = url.host?.lowercased() else { return nil }
-        if host == "v.douyin.com" || host == "iesdouyin.com" && url.path.count <= 12 {
+        // 剪贴板/深链是不可信输入：只认 https，防止 eviliesdouyin.com 之类后缀绕过白名单后拿去发请求
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { return nil }
+        if host == "v.douyin.com" || (host == "iesdouyin.com" && url.path.count <= 12) {
             return url.path.count > 1 ? .short(url) : nil
         }
-        guard host == "douyin.com" || host.hasSuffix(".douyin.com") || host.hasSuffix("iesdouyin.com") else { return nil }
+        let allowed = host == "douyin.com" || host.hasSuffix(".douyin.com")
+            || host == "iesdouyin.com" || host.hasSuffix(".iesdouyin.com")
+        guard allowed else { return nil }
         if let id = videoID(in: url) { return .video(id) }
         return nil
     }

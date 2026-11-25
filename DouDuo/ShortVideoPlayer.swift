@@ -20,33 +20,53 @@ enum DDPlaybackPauseReason: Equatable {
 
 final class DDPlayback {
     static let shared = DDPlayback()
+    /// 全部可变状态由这一把锁保护（含标量 / 集合 / 回调表）。
+    /// 之前 appIsActive / pauseReason / coverCount / settingsCovers 跨 @MainActor 与非隔离方法裸奔，
+    /// 后台回调与播放器回调并发时会加减丢失、误判前后台；现在所有读写都走 withLock。
+    /// 所有外部回调（stop/start）一律在锁外执行，避免 NSLock 不可重入导致自锁死锁。
     private var stoppers: [UUID: () -> Void] = [:]
     private var starters: [UUID: () -> Void] = [:]
     private var sessionRetainers: [UUID: () -> Bool] = [:]
     /// 播放器所在的遮罩层级：0 = 首页；从信息页/我的里点开的全屏播放器 = 打开时的遮罩数。
     /// 遮罩数没超过这一层，说明它就是最上面那层，可以播（老板 11-18：信息里点开的视频要等十几秒才动）。
     private var coverLevels: [UUID: Int] = [:]
-    private var lock = NSLock()
+    private let lock = NSLock()
     /// App 当前是否在前台：注册晚于切后台时（视频刚起播），要立刻停，不能接着响
-    private(set) var appIsActive = true
-    private(set) var pauseReason: DDPlaybackPauseReason = .background
+    private var _appIsActive = true
+    private var _pauseReason: DDPlaybackPauseReason = .background
     /// 转发等覆盖层还盖着。后台锁不能把它清掉，前台回调也不能在它消失前把直播拉起来。
-    private var coverCount = 0
+    private var _coverCount = 0
     // Settings may destroy their presenter when switching UI mode.
     // Stable owners make root teardown and late sheet dismissal idempotent.
-    private var settingsCovers: Set<UUID> = []
+    private var _settingsCovers: Set<UUID> = []
+
+    /// 锁内计算挂载深度（调用方必须已持有 lock）
+    private func depthLocked() -> Int { _coverCount + _settingsCovers.count }
+
+    var appIsActive: Bool { lock.lock(); defer { lock.unlock() }; return _appIsActive }
+    private(set) var pauseReason: DDPlaybackPauseReason { lock.lock(); defer { lock.unlock() }; return _pauseReason }
     var coverHold: Bool { coverDepth > 0 }
-    var coverDepth: Int { coverCount + settingsCovers.count }
+    var coverDepth: Int { lock.lock(); defer { lock.unlock() }; return depthLocked() }
     /// 这一层的播放器现在是不是露在最上面
-    func isUncovered(level: Int) -> Bool { coverDepth == 0 || (level > 0 && coverDepth <= level) }
+    func isUncovered(level: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let depth = depthLocked()
+        return depth == 0 || (level > 0 && depth <= level)
+    }
 
     func beginSettingsCover(_ owner: UUID) {
-        guard settingsCovers.insert(owner).inserted else { return }
+        lock.lock()
+        let inserted = _settingsCovers.insert(owner).inserted
+        lock.unlock()
+        guard inserted else { return }
         pauseAll(reason: .cover, countLegacyCover: false)
     }
 
     func endSettingsCover(_ owner: UUID) {
-        guard settingsCovers.remove(owner) != nil else { return }
+        lock.lock()
+        let removed = _settingsCovers.remove(owner) != nil
+        lock.unlock()
+        guard removed else { return }
         resumeAfterLastCover()
     }
     @MainActor private var offlineLibraryPresentations: Set<UUID> = []
@@ -61,12 +81,12 @@ final class DDPlayback {
         // players even in listening mode, without taking another cover count.
         lock.lock()
         let stops = Array(stoppers.values)
+        let previous = _pauseReason
+        _pauseReason = .cover
         lock.unlock()
-        let previous = pauseReason
-        pauseReason = .cover
         stops.forEach { $0() }
         DDAudioEngineHub.shared.pauseAll()
-        pauseReason = previous
+        lock.lock(); _pauseReason = previous; lock.unlock()
     }
 
     @MainActor func endOfflineLibrary(_ presentation: UUID) {
@@ -81,55 +101,67 @@ final class DDPlayback {
 
     func register(_ id: UUID, stop: @escaping () -> Void, start: @escaping () -> Void,
                   retainsAudioSession: (() -> Bool)? = nil, playsInsideCover: Bool = false, coverLevel: Int = 0) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         stoppers[id] = stop; starters[id] = start
         coverLevels[id] = coverLevel
         if let retainsAudioSession { sessionRetainers[id] = retainsAudioSession }
         else { sessionRetainers[id] = nil }
         // 被遮罩挡住才停；自己就在最上层（信息页里点开的视频）时不停
-        let onTop = coverLevel > 0 && coverDepth > 0 && coverDepth <= coverLevel
+        let depth = depthLocked()
+        let onTop = coverLevel > 0 && depth > 0 && depth <= coverLevel
             && UIApplication.shared.applicationState == .active
-        let shouldStop = !appIsActive && !playsInsideCover && !onTop
+        let shouldStop = !_appIsActive && !playsInsideCover && !onTop
+        let total = stoppers.count
+        let active = _appIsActive
+        lock.unlock()   // 外部回调必须在锁外执行（NSLock 不可重入）
         #if DEBUG
-        ddWrite("DDBG register \(id.uuidString.prefix(4)) total=\(stoppers.count) appActive=\(appIsActive)")
+        ddWrite("DDBG register \(id.uuidString.prefix(4)) total=\(total) appActive=\(active)")
         #endif
         if shouldStop { stop() }
     }
     func unregister(_ id: UUID) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         stoppers[id] = nil; starters[id] = nil; sessionRetainers[id] = nil; coverLevels[id] = nil
+        let total = stoppers.count
+        lock.unlock()
         #if DEBUG
-        ddWrite("DDBG unregister \(id.uuidString.prefix(4)) total=\(stoppers.count)")
+        ddWrite("DDBG unregister \(id.uuidString.prefix(4)) total=\(total)")
         #endif
     }
     /// 控制中心、通知横幅这类失焦。短视频暂停；不把 App 标成后台，直播的停止留到真正的 background。
     func pauseForInactivity() {
-        guard appIsActive else { return }
         lock.lock()
+        guard _appIsActive else { lock.unlock(); return }
         let stops = Array(stoppers.values)
+        let previous = _pauseReason
+        _pauseReason = .inactive
         lock.unlock()
-        let previous = pauseReason
-        pauseReason = .inactive
         stops.forEach { $0() }
-        if pauseReason == .inactive { pauseReason = previous }
+        lock.lock()
+        if _pauseReason == .inactive { _pauseReason = previous }
+        lock.unlock()
     }
     func pauseAll(reason: DDPlaybackPauseReason = .background) {
         pauseAll(reason: reason, countLegacyCover: true)
     }
 
     private func pauseAll(reason: DDPlaybackPauseReason, countLegacyCover: Bool) {
+        lock.lock()
         let addsLegacyCover = reason == .cover && countLegacyCover
-        if addsLegacyCover { coverCount += 1 }
-        let backgroundWhileCover = reason == .background && !appIsActive && coverHold
+        if addsLegacyCover { _coverCount += 1 }
+        let wasActive = _appIsActive
+        let backgroundWhileCover = reason == .background && !wasActive && depthLocked() > 0
+        var allowed = true
         if !backgroundWhileCover {
-            guard DYLivePlaybackGate.apply(appIsActive: appIsActive, command: .pause) else {
-                if addsLegacyCover { coverCount = max(0, coverCount - 1) }
+            allowed = DYLivePlaybackGate.apply(appIsActive: wasActive, command: .pause)
+            if !allowed {
+                if addsLegacyCover { _coverCount = max(0, _coverCount - 1) }
+                lock.unlock()
                 return
             }
-            appIsActive = false
+            _appIsActive = false
         }
-        pauseReason = reason
-        lock.lock()
+        _pauseReason = reason
         let stops = Array(stoppers.values)
         let retainers = Array(sessionRetainers.values)
         lock.unlock()
@@ -155,27 +187,40 @@ final class DDPlayback {
         }
     }
     func resumeAll() {
-        guard DYLivePlaybackGate.apply(appIsActive: appIsActive, command: .resume) else { return }
-        appIsActive = true
-        guard !coverHold else { startPlayersOnTop(); return }
+        lock.lock()
+        let wasActive = _appIsActive
+        guard DYLivePlaybackGate.apply(appIsActive: wasActive, command: .resume) else { lock.unlock(); return }
+        _appIsActive = true
+        let holding = depthLocked() > 0
+        lock.unlock()
+        guard !holding else { startPlayersOnTop(); return }
         startRegisteredPlayers()
     }
     /// 覆盖层消失。还在后台时只减计数；人已经回到前台才启动。
     func releaseCover() {
-        guard coverCount > 0 else { return }
-        coverCount -= 1
+        lock.lock()
+        guard _coverCount > 0 else { lock.unlock(); return }
+        _coverCount -= 1
+        lock.unlock()
         resumeAfterLastCover()
     }
     private func resumeAfterLastCover() {
         guard UIApplication.shared.applicationState == .active else { return }
-        guard !coverHold else { startPlayersOnTop(); return }
-        appIsActive = true
+        lock.lock()
+        let holding = depthLocked() > 0
+        _appIsActive = true
+        lock.unlock()
+        guard !holding else { startPlayersOnTop(); return }
         startRegisteredPlayers()
     }
     /// 还有遮罩时：只启动「就在最上层」的播放器（例如信息页里点开的视频关掉它自己的设置页后）
     private func startPlayersOnTop() {
         lock.lock()
-        let s = starters.filter { id, _ in let l = coverLevels[id] ?? 0; return l > 0 && coverDepth <= l }.map(\.value)
+        let depth = depthLocked()   // 锁内只能用 depthLocked()，用 coverDepth 会二次加锁自锁死锁
+        let s = starters.filter { id, _ in
+            let l = coverLevels[id] ?? 0
+            return l > 0 && depth <= l
+        }.map(\.value)
         lock.unlock()
         guard !s.isEmpty else { return }
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
@@ -486,6 +531,9 @@ struct PlayerPage: View {
     }
     @State private var dmClock = DYDanmakuClock()
     @State private var timeToken: Any?
+    /// MPRemoteCommandCenter 是进程级单例：block-based target 必须存 token 精确移除，
+    /// 否则每个播放页的闭包会永久挂在系统命令上（页面不释放）。
+    @State private var remoteTokens: [any MPRemoteCommandHandlerObject] = []
     @State private var endObserver: NSObjectProtocol?
     @State private var barWidth: CGFloat = 1
     @State private var vlc: VLCPlayerController?        // AVPlayer 起播失败 → VLC 软解兜底
@@ -761,6 +809,7 @@ struct PlayerPage: View {
             DDNowPlaying.release(playbackID, whilePlaying: playbackIsActive)
             playbackIsActive = false
             if DDRemoteOwner.instance == playbackID { clearRemote() }
+            else { releaseRemoteTokens() }   // 非 owner 页只清自己的 token，别动 owner 的锁屏控件
             #if DEBUG
             DYSearchPlaybackProbe.unregister(playbackID, id: id)
             #endif
@@ -1936,7 +1985,18 @@ struct PlayerPage: View {
 
     // MARK: 锁屏 / 控制中心播放控件（播放暂停、前进后退 10 秒、进度条、倍速）
 
+    /// 只移除本页注册的 block handler，不碰全局命令状态（非 owner 页销毁时用，避免误清 owner 的锁屏控件）
+    private func releaseRemoteTokens() {
+        guard !remoteTokens.isEmpty else { return }
+        let c = MPRemoteCommandCenter.shared()
+        let cmds = [c.playCommand, c.pauseCommand, c.togglePlayPauseCommand, c.skipForwardCommand, c.skipBackwardCommand,
+                    c.changePlaybackPositionCommand, c.changePlaybackRateCommand]
+        for token in remoteTokens { cmds.forEach { $0.removeTarget(token) } }
+        remoteTokens.removeAll()
+    }
+
     private func clearRemote() {
+        releaseRemoteTokens()
         let c = MPRemoteCommandCenter.shared()
         [c.playCommand, c.pauseCommand, c.togglePlayPauseCommand, c.skipForwardCommand, c.skipBackwardCommand,
          c.changePlaybackPositionCommand, c.changePlaybackRateCommand].forEach { $0.removeTarget(nil); $0.isEnabled = false }
@@ -1952,13 +2012,14 @@ struct PlayerPage: View {
         let now = { vlc?.current ?? seamAudio.currentMediaTime ?? player?.currentTime().seconds ?? current }
         func on(_ cmd: MPRemoteCommand, _ f: @escaping (MPRemoteCommandEvent) -> Void) {
             cmd.removeTarget(nil); cmd.isEnabled = true
-            cmd.addTarget { e in
+            let token = cmd.addTarget { e in
                 DispatchQueue.main.async {
                     guard canControlPlayback, DDRemoteOwner.instance == playbackID else { return }
                     f(e)
                 }
                 return .success
             }
+            remoteTokens.append(token)
         }
         on(c.playCommand) { _ in if !isPlaying { togglePlay() } }
         on(c.pauseCommand) { _ in if isPlaying { togglePlay() } }

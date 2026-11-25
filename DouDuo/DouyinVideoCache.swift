@@ -19,12 +19,48 @@ struct DYFeedSession: Codable {
               session.items.contains(where: { $0.id == session.currentID }) else { return nil }
         return session
     }
+    /// 切条时会高频调用（刷视频每一条都触发）。整个 items 的 JSON 编码 + 原子写盘放到后台串行队列，
+    /// 绝不占主线程起播那一帧；连续调用按「最后一次」合并（防抖），避免刷得快时排队写一串全量快照。
+    /// DYAweme 是 Sendable，跨队列持有安全。
     func save() {
-        guard items.contains(where: { $0.id == currentID }),
-              let data = try? JSONEncoder().encode(self) else { return }
-        do { try data.write(to: Self.url, options: .atomic) }
-        catch { DYLiveModel.log("DDSESSION 保存失败 \(error.localizedDescription)") }
+        guard items.contains(where: { $0.id == currentID }) else { return }
+        Self.writeQueue.async {
+            Self.pendingSession = self
+            // 队列串行：只保留最后一次提交，前面排队的直接跳过编码
+            guard !Self.writeScheduled else { return }
+            Self.writeScheduled = true
+            Self.writeQueue.asyncAfter(deadline: .now() + Self.debounce) {
+                Self.writeScheduled = false
+                guard let session = Self.pendingSession else { return }
+                Self.pendingSession = nil
+                do {
+                    let data = try JSONEncoder().encode(session)
+                    try data.write(to: Self.url, options: .atomic)
+                } catch {
+                    DYLiveModel.log("DDSESSION 保存失败 \(error.localizedDescription)")
+                }
+            }
+        }
     }
+
+    /// 退出 / 切后台时立即落盘，不等防抖（保住最后一条进度）
+    static func flush() {
+        writeQueue.async {
+            guard let session = pendingSession else { return }
+            pendingSession = nil
+            do {
+                let data = try JSONEncoder().encode(session)
+                try data.write(to: Self.url, options: .atomic)
+            } catch {
+                DYLiveModel.log("DDSESSION flush 保存失败 \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private static let writeQueue = DispatchQueue(label: "douduo.feedsession", qos: .utility)
+    private static let debounce: TimeInterval = 0.3
+    private nonisolated(unsafe) static var pendingSession: DYFeedSession?
+    private nonisolated(unsafe) static var writeScheduled = false
 }
 
 actor DYVideoCache {

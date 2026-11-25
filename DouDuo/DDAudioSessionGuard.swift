@@ -49,13 +49,18 @@ enum DDAudioSessionGuard {
         return !foreground || allowDepth > 0
     }
 
-    nonisolated(unsafe) static var blocked = 0
+    /// 拦截计数：swizzle 的 setActive 可能来自 VLC 的任意后台线程，+= 非原子。统一走 lock。
+    private nonisolated(unsafe) static var _blocked = 0
+    nonisolated static var blocked: Int { lock.lock(); defer { lock.unlock() }; return _blocked }
+    static func noteBlocked() {
+        lock.lock(); _blocked += 1; lock.unlock()
+    }
 }
 
 extension AVAudioSession {
     @objc(dd_setActive:withOptions:error:) dynamic func dd_setActive(_ active: Bool, options: AVAudioSession.SetActiveOptions) throws {
         if !active, !DDAudioSessionGuard.permitsDeactivate() {
-            DDAudioSessionGuard.blocked += 1
+            DDAudioSessionGuard.noteBlocked()
             DYLiveModel.log("DDAUDIOGUARD 拦下前台关闭音频会话（多半是 VLC 停播） n=\(DDAudioSessionGuard.blocked)")
             return
         }
@@ -64,7 +69,7 @@ extension AVAudioSession {
 
     @objc(dd_setActive:error:) dynamic func dd_setActive(_ active: Bool) throws {
         if !active, !DDAudioSessionGuard.permitsDeactivate() {
-            DDAudioSessionGuard.blocked += 1
+            DDAudioSessionGuard.noteBlocked()
             DYLiveModel.log("DDAUDIOGUARD 拦下前台关闭音频会话 n=\(DDAudioSessionGuard.blocked)")
             return
         }

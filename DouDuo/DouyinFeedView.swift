@@ -672,7 +672,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         }
         let u = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("qr.png")
         try? png.write(to: u)
-        DYLiveModel.log("DDQR 二维码已生成 token=\(token.prefix(8))")
+        DYLiveModel.log("DDQR 二维码已生成 tokenLen=\(token.count)")
         let checkJS = #"""
         const r = await fetch('https://sso.douyin.com/check_qrconnect/?service=' + encodeURIComponent('https://www.douyin.com') + '&token=' + token + '&need_logo=false&aid=6383&account_sdk_source=sso&language=zh', { credentials: 'include' });
         return await r.text();
@@ -1461,6 +1461,7 @@ final class DYPreloader {
         handedOut.removeAll()
         window = [:]
         last = nil
+        retried.removeAll()   // 只增不减：长会话会无界增长，切 tab / 内存紧张清掉
     }
 
     /// 预热失败只重试一次：本地文件坏了就改用在线地址，在线失败就再建一次
@@ -2075,6 +2076,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refillIfStuck(reason: "timer") }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             saveSession()
+            DYFeedSession.flush()   // 立即落盘，不等 0.3s 防抖
         }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
             let threads = DYThreadGuard.sample()
@@ -3352,6 +3354,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refillIfStuck(reason: "timer") }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             saveSession()
+            DYFeedSession.flush()   // 立即落盘，不等 0.3s 防抖
         }
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
             if DDPlayback.shared.appIsActive { saveSession() }

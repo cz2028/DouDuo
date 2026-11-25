@@ -208,7 +208,9 @@ enum DYImageXRequests {
             method: method, path: "/", query: query, headers: headers,
             accessKeyID: cred.accessKeyID, secretAccessKey: cred.secretAccessKey,
             region: region, service: service, amzDate: date)
-        var req = URLRequest(url: URL(string: gateway + "/?" + DYAWS4.canonicalQuery(query))!)
+        // 本地常量 + 已编码 query，正常一定能构造；兜底到 gateway 避免远端/改动导致崩溃
+        let url = URL(string: gateway + "/?" + DYAWS4.canonicalQuery(query)) ?? URL(string: gateway)!
+        var req = URLRequest(url: url)
         req.httpMethod = method
         req.timeoutInterval = 30
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
@@ -247,7 +249,12 @@ enum DYImageXRequests {
 
     /// 第 2 步：把文件本体传到存储节点
     static func upload(address: DYImageXUploadAddress, data: Data, fileName: String, userID: String) -> URLRequest {
-        var req = URLRequest(url: URL(string: "https://\(address.host)/upload/v1/\(address.storeURI)")!)
+        // host / storeURI 来自 ImageX 回包，只校验过非空。含空格/中文/未转义 % 会让 URL(string:) 返回 nil，
+        // 之前强制解包直接崩溃（评论发图场景）。对 URI 做路径转义后再构造，构造失败退回网关地址。
+        let escapedURI = address.storeURI.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? address.storeURI
+        let urlString = "https://\(address.host)/upload/v1/\(escapedURI)"
+        let url = URL(string: urlString) ?? URL(string: gateway)!
+        var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 120
         for (k, v) in address.extraHeaders { req.setValue(v, forHTTPHeaderField: k) }
@@ -271,7 +278,7 @@ enum DYImageXRequests {
     /// 第 3 步：提交
     static func commit(cred: DYImageXCredential, sessionKey: String, now: Date = Date()) -> URLRequest {
         let query = ["Action": "CommitImageUpload", "Version": apiVersion, "ServiceId": cred.serviceID]
-        let body = (try? JSONSerialization.data(withJSONObject: ["SessionKey": sessionKey])) ?? Data()
+        let body = (try? JSONSerialization.data(withJSONObject: ["SessionKey": sessionKey])) ?? Data("{\"SessionKey\":\"\"}".utf8)
         return signedGatewayRequest(method: "POST", query: query, body: body, cred: cred, now: now)
     }
 

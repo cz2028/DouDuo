@@ -47,9 +47,9 @@ final class DYAccountStore: ObservableObject {
         }
         persist()
     }
-    /// 测试核对：当前 cookie 里的 sessionid
-    static func debugSessionValue() async -> String? {
-        await douyinCookies().first { $0.name == "sessionid" }?.value
+    /// 调试日志只记「有没有 sessionid」，绝不打印原文（ddlog.txt 会落盘，泄露即账号会话被盗）
+    static func debugSessionState() async -> String {
+        (await douyinCookies().first { $0.name == "sessionid" }?.value.isEmpty == false) ? "set" : "none"
     }
     #endif
 
@@ -87,7 +87,7 @@ final class DYAccountStore: ObservableObject {
         Self.clearAccountCaches()
         DYLiveModel.log("DDACCOUNT switch uid=…\(account.id.suffix(4)) cookies=\(cookies.count)")
         #if DEBUG
-        DYLiveModel.log("DDACCOUNT now sessionid=\(await Self.debugSessionValue() ?? "none")")
+        DYLiveModel.log("DDACCOUNT sessionid=\(await Self.debugSessionState())")
         #endif
         return true
     }
@@ -101,7 +101,7 @@ final class DYAccountStore: ObservableObject {
         Self.clearAccountCaches()
         DYLiveModel.log("DDACCOUNT sign-out n=\(accounts.count)")
         #if DEBUG
-        DYLiveModel.log("DDACCOUNT now sessionid=\(await Self.debugSessionValue() ?? "none")")
+        DYLiveModel.log("DDACCOUNT sessionid=\(await Self.debugSessionState())")
         #endif
     }
 

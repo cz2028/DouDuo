@@ -102,6 +102,9 @@ final class DYDanmakuEngineView: UIView {
     /// 没有在飞的、也没有待出场的弹幕时不跑逐帧刷新（否则 120 帧空转。真机：弹幕刷新占主线程约 1 成）
     private var hasWork: Bool { !flying.isEmpty || cursor < queue.count }
 
+    /// 队列硬上限：超长视频/直播分段弹幕持续到达时，queue/queued 之前只增不减，播放越久内存越大
+    private static let queueCap = 2000
+
     /// 新到的弹幕并入队列；已经在飞的不受影响，过去时间点的不倒着补（跟抖音一样）
     private func merge(_ items: [DYDanmaku]) {
         let fresh = items.filter { $0.offset.isFinite && $0.offset >= 0 && !$0.id.isEmpty && !queued.contains($0.id) }
@@ -110,6 +113,16 @@ final class DYDanmakuEngineView: UIView {
         let resumeFrom = cursor < queue.count ? queue[cursor].offset : (lastT >= 0 ? lastT : 0)
         queue = (queue + fresh).sorted { $0.offset == $1.offset ? $0.id < $1.id : $0.offset < $1.offset }
         cursor = queue.firstIndex { $0.offset >= resumeFrom } ?? queue.count
+        // 裁剪已播过的旧弹幕（cursor 之前且不在飞），同步清 queued/done 里的 id，防无界增长
+        if queue.count > Self.queueCap {
+            let dropCount = queue.count - Self.queueCap
+            let doomed = Array(queue.prefix(dropCount))
+            queue.removeFirst(dropCount)
+            for d in doomed where !flying.contains(where: { $0.id == d.id }) {
+                queued.remove(d.id); done.remove(d.id); lastShown.remove(d.id)
+            }
+            cursor = max(0, cursor - dropCount)
+        }
     }
 
     /// 跳转/重新开始：清屏，从 t 往后排
