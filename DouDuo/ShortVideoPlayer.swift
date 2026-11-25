@@ -303,6 +303,28 @@ final class PageLife {
     var generation = 0
 }
 
+/// 播放页中央的加载提示：区分「还没加载出视频」和「播放中缓冲」。
+struct DDLoadingBadge: View {
+    let text: String
+    @Environment(\.ddScale) private var ui
+    var body: some View {
+        VStack(spacing: 8 * ui) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .tint(.white)
+            Text(text)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white.opacity(0.92))
+        }
+        .padding(.horizontal, 16 * ui)
+        .padding(.vertical, 12 * ui)
+        .background(.black.opacity(0.34), in: .rect(cornerRadius: 14 * ui))
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("douyin.loading")
+        .accessibilityLabel(text)
+    }
+}
+
 /// 极简模式：长按圆形模块入口时，让当前视频页把左下角的作者和标题临时显示出来（松手消失）。
 /// 直接复用页面里原来的信息区，所以样式、位置和平时完全一样。
 @MainActor final class DDPeekInfo: ObservableObject {
@@ -456,6 +478,8 @@ struct PlayerPage: View {
     var continuationURL: URL? = nil
     @State private var continued = false
     @State private var firstFrame = false
+    /// 播过画面之后又卡住等数据（区别于「还没加载出来」）。由 0.25s 的时钟采样 timeControlStatus。
+    @State private var buffering = false
     @State private var offlineBadgeVisible = false
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     /// 视频画面宽高比（海报占位用同一套铺满规则，避免「先小后跳」）
@@ -469,10 +493,12 @@ struct PlayerPage: View {
     var boost: DYBoostControl? = nil
     var onHorizontalDrag: ((CGFloat, CGFloat) -> Void)? = nil
     var onHorizontalDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil
-    /// 简洁 / 极简模式：隐藏底部进度条，进度改画在模块入口外圈
+    /// 极简模式：隐藏底部进度条，进度改画在模块入口外圈。
+    /// 简洁模式保留底部进度条 + 时长（老板 11-25：简洁模式里也要看进度和总时长），
+    /// 此时入口外圈就不再画进度环，避免同一个进度画两遍。
     @AppStorage("douyin_chrome_mode_v1") private var chromeModeRaw = "classic"
     private var progressOnRail: Bool {
-        offlineContext?.inLibrary != true && (chromeModeRaw == "minimal" || chromeModeRaw == "rail")
+        offlineContext?.inLibrary != true && chromeModeRaw == "minimal"
     }
     /// 上一次刷新「正在播放」信息的位置（约每秒一次）
     @State private var lastNowPlaying = -10.0
@@ -544,7 +570,8 @@ struct PlayerPage: View {
     @State private var vlcDeadline: Task<Void, Never>?
     @State private var savedPlaybackStarted = false
     @State private var savedPlaybackCompleted = false
-    @State private var avRetried = false
+    /// 卡死重建的级数：0 没试过 → 1 已按边下边播重建 → 2 已换直连 → 3 该退 VLC
+    @State private var retryStage = 0
     /// 秒开期间：高清播放器（静音、几乎透明地叠在低清上面缓冲），就绪后淡入接管
     @State private var hdPlayer: AVPlayer?
     @State private var hdVisible = false
@@ -721,7 +748,8 @@ struct PlayerPage: View {
             if seeking && !cleanScreen {
                 seekHUD
             }
-            if !usesClassicVideoLayout && !cleanScreen && isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
+            if !usesClassicVideoLayout && !cleanScreen && isActive && firstFrame && !isPlaying
+                && (player != nil || vlc != nil) && !seeking {
                 Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.9))
                     .themeShadow(.mediaLabel)
                     .allowsHitTesting(false)
@@ -748,6 +776,15 @@ struct PlayerPage: View {
                 }
             }
         }
+        .overlay(alignment: .center) {
+            // 卡住时让人一眼分清两种：还没加载出来（加载中）/ 播着播着等数据（缓冲中）
+            if let text = loadingText {
+                DDLoadingBadge(text: text)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(commentReduceMotion ? nil : .easeOut(duration: 0.18), value: loadingText)
         .clipped()
         .task(id: offlinePosition) {
             offlineBadgeVisible = offlinePosition != nil
@@ -868,7 +905,7 @@ struct PlayerPage: View {
         .onChange(of: offlineContext?.localOnly) { _, localOnly in
             guard localOnly == true, !playingLocalFile, player != nil || vlc != nil else { return }
             teardown()
-            avRetried = false
+            retryStage = 0
             firstFrame = false
             setup()
         }
@@ -884,7 +921,7 @@ struct PlayerPage: View {
         // ⚠️ 不能在 current 的 setter 里直接推：setter 常在播放器时间回调里调，那个闭包捕获的是旧的 PlayerPage 副本，
         // 里面的 isActive 是挂回调时的值（预热时 = false）→ 极简模式进度环永远不动（老板 11-21）。
         // onReceive 每次都用当前这一版视图跑，且不会让 PlayerPage 整页重算。
-        .onReceive(clock.$current) { _ in pushRailProgress(); syncTouchpad() }
+        .onReceive(clock.$current) { _ in pushRailProgress(); syncTouchpad(); sampleBuffering() }
         .onChange(of: touchpadEngaged) { _, _ in syncTouchpad() }
         .onChange(of: isPlaying) { _, _ in syncTouchpad() }
         .onChange(of: seeking) { _, _ in pushRailProgress() }
@@ -1021,6 +1058,25 @@ struct PlayerPage: View {
             }
             // 不再铺首帧图/封面临时顶替：出帧前就是纯黑，出帧即真画面（老板嫌「开头跳一下预览图」）
         }
+    }
+
+    /// 中央加载提示：首帧还没出来 = 「加载中」；已经出过画面又停住等数据 = 「缓冲中」。
+    /// 老板 11-25：卡住时要能分清是「根本没加载到」还是「播着播着卡了」。
+    private var loadingText: String? {
+        guard isActive, !cleanScreen, !seeking else { return nil }
+        guard player != nil || vlc != nil else { return nil }
+        if !firstFrame { return "加载中…" }
+        return buffering ? "缓冲中…" : nil
+    }
+
+    /// 采样 timeControlStatus（只在状态真的变了才写 @State，别每 0.25 秒都触发一次重画）
+    private func sampleBuffering() {
+        guard isActive, let p = player, vlc == nil else {
+            if buffering { buffering = false }
+            return
+        }
+        let now = firstFrame && isPlaying && !seeking && p.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        if now != buffering { buffering = now }
     }
 
     private func pushRailProgress() {
@@ -1343,6 +1399,12 @@ struct PlayerPage: View {
                        useEngine: !nativeAudio && DDSeamlessController.engineWanted, engineHandoff: !nativeAudio)
     }
 
+    /// 播放器里的 item 是不是「没有主人的 ddstream 资源」：条目被 trim 清掉后它只会一直等数据
+    private func staleStreamItem(_ p: AVPlayer?) -> Bool {
+        guard let u = (p?.currentItem?.asset as? AVURLAsset)?.url, let key = DYStream.id(of: u) else { return false }
+        return DYStreamStore.shared.entry(key) == nil
+    }
+
     private func setup(prepared: AVPlayer? = nil) {
         let localURL = offlineContext?.localOnly == true ? offlineContext?.localURL() : nil
         if offlineContext?.localOnly == true, localURL == nil {
@@ -1357,7 +1419,18 @@ struct PlayerPage: View {
         #endif
         if isActive { DYStreamStore.shared.activate(id, at: initialResumePosition ?? 0) }
         let candidate = prepared ?? preparedPlayer?()
-        let pre = localURL == nil || (candidate?.currentItem?.asset as? AVURLAsset)?.url == localURL ? candidate : nil
+        // 预热池 / 归还的播放器不能照单全收：
+        // - item 已经 failed：它永远不会再 readyToPlay，直接换新的
+        // - item 是 ddstream 资源但登记条目已经被换条后的 trim 清掉：资源加载器找不到条目，
+        //   AVFoundation 那一侧只会一直等（真机就是「滑回来黑屏十几秒」），重新登记一次更快
+        let usable: AVPlayer?
+        if let c = candidate, c.currentItem?.status != .failed, !staleStreamItem(c) {
+            usable = c
+        } else {
+            usable = nil
+        }
+        let sameAsset = localURL == nil || (usable?.currentItem?.asset as? AVURLAsset)?.url == localURL
+        let pre = sameAsset ? usable : nil
         DYLiveModel.log("DDSETUP \(id.suffix(6)) active=\(isActive) pre=\(pre != nil) status=\(pre?.currentItem?.status.rawValue ?? -1) buf=\(String(format: "%.1f", pre.map { DYPlaybackTelemetry.bufferedAhead($0) } ?? 0))s")
         #if DEBUG
         let preReady = pre?.currentItem?.status == .readyToPlay
@@ -1410,11 +1483,13 @@ struct PlayerPage: View {
             watchdog(p); telemetry.begin(p, id: id, duration: knownDuration)
             // 复用的是预热池里那个播放器（上滑回上一条就是这条路径）：它可能已经被上一次播放停下，
             // 边下边播的会话也断过，item 会永远停在 unknown —— 表现为「滑回去黑屏」。
-            // 2.2 秒还没出画面就重建一次（走直连地址），不必等 5 秒看门狗。
+            // 3 秒还没出画面就重建一次（先按边下边播重来，还不行才换直连），不必等 5 秒看门狗。
             if pre != nil {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
-                    guard player === p, isActive, isPlaying, !firstFrame, p.rate == 0, vlc == nil else { return }
-                    DYLiveModel.log("DDREENTRY \(id.suffix(6)) 复用播放器 2.2s 无画面 status=\(p.currentItem?.status.rawValue ?? -1) → 重建")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    guard player === p, isActive, isPlaying, !firstFrame, vlc == nil else { return }
+                    // 只判「不在 playing」：设了速率但一直 waiting / rate 仍是 1，都算没起来。
+                    guard p.timeControlStatus != .playing else { return }
+                    DYLiveModel.log("DDREENTRY \(id.suffix(6)) 复用播放器 3s 无画面 status=\(p.currentItem?.status.rawValue ?? -1) tcs=\(p.timeControlStatus.rawValue) rate=\(p.rate) → 重建")
                     retryPlayback()
                 }
             }
@@ -1631,11 +1706,14 @@ struct PlayerPage: View {
             let position = p.currentTime().seconds
             let waiting = offlineContext != nil && p.timeControlStatus == .waitingToPlayAtSpecifiedRate &&
                 (!position.isFinite || position <= start + 0.02)
-            // 上滑回来复用预热播放器 / 边下边播会话已断：item 停在 unknown、rate 一直是 0，
-            // 而播放位置又不在 0 秒附近 → 老判据（position < 0.1）不成立，看门狗永不触发，页面就一直黑着。
-            // 「该播却根本没在播」也算卡死，重建一次（rebuild 走直连地址，绕开坏掉的边下边播）。
-            let notAdvancing = isPlaying && p.timeControlStatus != .playing && p.rate == 0
-            let stuck = p.currentItem == nil || failedNow || position < 0.1 || waiting || notAdvancing
+            // 上滑回来复用预热播放器 / 边下边播会话已断：item 停在 unknown，而播放位置又不在 0 秒附近
+            // → 老判据（position < 0.1）不成立，看门狗永不触发，页面就一直黑着。
+            // 现在再补一条：5 秒里位置一点没动、也不在 playing 状态，就算卡死。
+            // 必须用「位置没动」而不是 rate == 0：AVPlayer 设了速率但在等等待时 rate 仍是 1，
+            // 只判 rate == 0 会漏掉「设了 1 倍速却一帧都不走」这种最常见的黑屏。
+            let frozen = isPlaying && position.isFinite && abs(position - start) < 0.05 &&
+                p.timeControlStatus != .playing
+            let stuck = p.currentItem == nil || failedNow || position < 0.1 || waiting || frozen
             guard stuck else { return }
             let st = p.currentItem?.status.rawValue ?? -1
             let err = p.currentItem?.error.map { "\(($0 as NSError).domain)/\(($0 as NSError).code)" } ?? "-"
@@ -1644,7 +1722,7 @@ struct PlayerPage: View {
                 let v = r.timeRangeValue; return String(format: "%.1f-%.1f", v.start.seconds, CMTimeRangeGetEnd(v).seconds) }.joined(separator: ",")
             let reason = p.reasonForWaitingToPlay.map { $0.rawValue } ?? "-"
             let src = (it?.asset as? AVURLAsset)?.url.scheme ?? "-"
-            DYLiveModel.log("DDSTARTDIAG \(id) status=\(st) err=\(err) host=\(url.host ?? "-") alt=\(altURL?.host ?? "-") retried=\(avRetried) src=\(src) tcs=\(p.timeControlStatus.rawValue) rate=\(p.rate) why=\(reason) keepUp=\(it?.isPlaybackLikelyToKeepUp ?? false) full=\(it?.isPlaybackBufferFull ?? false) empty=\(it?.isPlaybackBufferEmpty ?? false) loaded=[\(ranges)] pos=\(String(format: "%.2f", position))")
+            DYLiveModel.log("DDSTARTDIAG \(id) status=\(st) err=\(err) host=\(url.host ?? "-") alt=\(altURL?.host ?? "-") retried=\(retryStage) src=\(src) tcs=\(p.timeControlStatus.rawValue) rate=\(p.rate) why=\(reason) keepUp=\(it?.isPlaybackLikelyToKeepUp ?? false) full=\(it?.isPlaybackBufferFull ?? false) empty=\(it?.isPlaybackBufferEmpty ?? false) loaded=[\(ranges)] pos=\(String(format: "%.2f", position))")
             // 数据已经够了却停着（rate=0 / 暂停态）：是播放被打断了不是数据问题，
             // 重新激活音频会话再播一下就行，不必重建播放器
             if it?.status == .readyToPlay, p.rate == 0, p.timeControlStatus == .paused, it?.isPlaybackLikelyToKeepUp == true {
@@ -1660,11 +1738,20 @@ struct PlayerPage: View {
     }
 
     private func retryPlayback() {
-        if avRetried {
+        switch retryStage {
+        case 0:
+            retryStage = 1
+            // 一级：重来一遍边下边播（重新登记 + 重新 activate，把挂起的资源请求唤醒）。
+            // 以前这里直接换直连 CDN：地址一旦 403 / 过期，换了反而黑更久（真机 14–28 秒）。
+            DYLiveModel.log("DDRETRY \(id.suffix(6)) stage=1 stream")
+            rebuild(viaStream: true)
+        case 1:
+            retryStage = 2
+            DYLiveModel.log("DDRETRY \(id.suffix(6)) stage=2 直连")
+            rebuild(viaStream: false)
+        default:
+            DYLiveModel.log("DDRETRY \(id.suffix(6)) stage=3 VLC")
             startVLC()
-        } else {
-            avRetried = true
-            rebuild()
         }
     }
 
@@ -1678,22 +1765,37 @@ struct PlayerPage: View {
         return here
     }
 
-    private func rebuild() {
+    private func rebuild(viaStream: Bool = false) {
         cancelUpgrade()
         teardownPlayerOnly()
         #if DEBUG
-        ddWrite("DDREBUILD \(id) alt=\(altURL != nil)")
+        ddWrite("DDREBUILD \(id) viaStream=\(viaStream) alt=\(altURL != nil)")
         #endif
-        let source = offlineContext?.localOnly == true
-            ? offlineContext?.localURL()
-            : (altURL ?? url)
+        let source: URL?
+        if offlineContext?.localOnly == true {
+            source = offlineContext?.localURL()
+        } else if viaStream, !url.isFileURL, DYStream.enabled {
+            // 重新登记一次边下边播：条目可能被换条后的 trim 清掉了，或者会话里的挂起请求已经没人唤醒。
+            // 走它比直连稳：本地已下的开头几秒还能直接用，不用从公网重下一遍。
+            DYStreamStore.shared.activate(id, at: current)
+            source = url
+        } else {
+            source = altURL ?? url
+        }
         guard let source else {
             if playbackIsActive { offlineContext?.onFailure() }
             return
         }
-        let item = makeItem(asset: DYMedia.asset(source))
+        let asset: AVURLAsset
+        if viaStream, !source.isFileURL, DYStream.enabled {
+            asset = DYStream.asset(id: id, remote: source)
+        } else {
+            asset = DYMedia.asset(source)
+        }
+        let item = makeItem(asset: asset)
         let p = AVPlayer(playerItem: item)
         p.automaticallyWaitsToMinimizeStalling = true
+        p.isMuted = seamAudio.mode == .noAudio || muted
         player = p
         attachObservers(p)
         let localResume = rebuildResumePosition
@@ -1701,7 +1803,7 @@ struct PlayerPage: View {
             restorePosition(localResume, using: p)
             DYStreamStore.shared.setPlayhead(id, localResume)
         }
-        DYLiveModel.log("DDREBUILD \(id.suffix(6)) resume=\(localResume.map { String(format: "%.1f", $0) } ?? "nil") alt=\(altURL != nil)")
+        DYLiveModel.log("DDREBUILD \(id.suffix(6)) resume=\(localResume.map { String(format: "%.1f", $0) } ?? "nil") viaStream=\(viaStream) alt=\(altURL != nil)")
         isPlaying = true
         bindSeamlessAudio(to: p, initialPos: localResume, active: isActive, playing: true)
         p.rate = playRate

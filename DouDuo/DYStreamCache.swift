@@ -632,6 +632,9 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                     if cursor >= end { req.finishLoading(); return }
                 }
             }
+            // 这个请求多久没有真正拿到数据了：播放器在等，而「等到哪下到哪」又不放行时会互相卡死，
+            // 表现就是画面一直黑着等十几秒（滑回上一条最容易踩到）。超过 4 秒就强制放开一小段。
+            var stalledAt = Date()
             while cursor < end {
                 try Task.checkCancellation()
                 // 1) 本地有：直接给
@@ -644,6 +647,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                     guard let d, !d.isEmpty else { throw URLError(.cannotOpenFile) }
                     dr.respond(with: d)
                     cursor += Int64(d.count)
+                    stalledAt = Date()
                     continue
                 }
                 // 2) 别的请求正在下这段：等它写进来（每 60ms 看一次），不重复下
@@ -651,6 +655,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 // （2026-11-20 真机：上一版在锁里调 horizon → 加载线程卡死，画面冻住）
                 let horizon = DYStreamStore.shared.horizon(e) ?? total
                 let starving = DYStreamStore.shared.isStarving(e.id)
+                let stalledFor = Date().timeIntervalSince(stalledAt)
                 e.lock.lock()
                 if e.inflight.contains(where: { $0.contains(cursor) }) {
                     e.lock.unlock()
@@ -663,6 +668,11 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 // （真机：分片 MP4 起播前要先读到 512KB 之后，被允许范围拦住，等了 20 秒）
                 // 但每条最多多放 2MB（真机：28 分钟的长视频没起播，这条规则一路放开下了 32MB）
                 if starving, cursor < horizon + 2 * 1024 * 1024 {
+                    allowed = max(allowed, min(total, cursor + DYStreamPlan.minFetchBytes))
+                }
+                // 4 秒没拿到任何数据：别再让播放器陪着等（可能是这条已经不是「当前条」，
+                // 上限只放到开头几秒，而播放位置早过了那儿 → 请求永远被挂起）
+                if stalledFor > 4 {
                     allowed = max(allowed, min(total, cursor + DYStreamPlan.minFetchBytes))
                 }
                 var fetch = DYStreamPlan.nextFetch(need: cursor, ranges: e.ranges, total: total, allowed: allowed)
@@ -686,6 +696,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                     fed += Int64(piece.count)
                 }
                 // 200 整条回来时没直接喂（fed 没动），下一轮从本地读
+                if fed > cursor { stalledAt = Date() }
                 cursor = fed
             }
             req.finishLoading()

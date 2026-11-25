@@ -1319,7 +1319,6 @@ final class DYPreloader {
     /// 这样「下一条没加载好就滑不动」不会变成每次都要滑两次
     /// 只给紧挨着的下一条预解码首帧（preroll 会把解码器跑起来）；再往后的只备好数据，划到前一条时自然轮到它。
     /// 以前 5 条都 preroll = 屏外同时开着好几个解码器（抖音做法：只解码可见页 + 下一页）
-    static let prerollAhead = 1
     private var players: [String: AVPlayer] = [:]
     private var handedOut: Set<String> = []
     private var obs: [String: NSKeyValueObservation] = [:]
@@ -1337,7 +1336,13 @@ final class DYPreloader {
         let th = ProcessInfo.processInfo.thermalState
         let ahead = th == .critical ? 1 : (th == .serious ? min(2, Self.ahead) : Self.ahead)
         let lo = index + 1, hi = min(items.count - 1, index + ahead)
-        let window = lo <= hi ? Array(items[lo...hi]) : []
+        let forward = lo <= hi ? Array(items[lo...hi]) : []
+        // 身后留 1 条（= 刚划过的那条）：不留的话，上一条页面被惰性分页回收时播放器没人接，
+        // 滑回来是彻底冷建（重新建播放器 + 重新缓冲），真机上就是「黑屏十几秒才出画面」。
+        // 留着它，页面回收时 giveBack 收得下，滑回来直接接上已就绪的 item，秒起播。
+        let behind = index > 0 ? [items[index - 1]] : []
+        let window = behind + forward
+        /// 真正要新建播放器的范围（身后那条只是保活，没有就顺便建一个，划回来也快）
         let ids = Set(window.map(\.id))
         self.window = Dictionary(window.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         last = (items, index, localOnly)
@@ -1345,6 +1350,8 @@ final class DYPreloader {
         for (id, p) in players where !ids.contains(id) { release(id, p) }
         let near = Set(items[max(0, index - 1)...min(items.count - 1, index + 1)].map(\.id))
         handedOut = handedOut.filter { near.contains($0) || ids.contains($0) }
+        // 只有紧挨着的「下一条」预解码首帧：window 现在含身后那条，不能再用窗口下标判断
+        let nextID = lo <= hi ? items[lo].id : ""
         for a in window where players[a.id] == nil && !handedOut.contains(a.id) {
             guard a.images.isEmpty, let s = a.play, let url = URL(string: s) else {
                 if let c = a.images.first.flatMap(URL.init(string:)) { Task { _ = await ImageCache.shared.load(c) } }
@@ -1370,7 +1377,6 @@ final class DYPreloader {
             DDAudioPreloadPool.shared.prewarm(id: a.id, asset: asset, item: item)
             // 数据一到位就登记「可播」——分页器据此放行（这里是预热池，跟页面挂没挂载无关，
             // 所以窗口内的条目在滑到之前就已经是 ready 了）
-            let nearIndex = window.firstIndex(where: { $0.id == a.id }) ?? 0
             obs[a.id] = item.observe(\.status, options: [.new]) { [weak self, weak p] it, _ in
                 if it.status == .failed {
                     // 预热失败（之前直接把坏播放器交给页面 → 被判未就绪弹回 3 次再从零建，老板感觉「加载又慢了」）
@@ -1389,8 +1395,8 @@ final class DYPreloader {
                 }
                 guard it.status == .readyToPlay else { return }
                 DYReadiness.mark(a.id)
-                // 最近的几条再补一次 preroll，把首帧解码出来，滑过去就是真画面
-                if nearIndex < Self.prerollAhead {
+                // 只有下一条再补一次 preroll，把首帧解码出来，滑过去就是真画面
+                if a.id == nextID {
                     DispatchQueue.main.async { p?.preroll(atRate: 1) { _ in } }
                 }
             }
@@ -1403,6 +1409,21 @@ final class DYPreloader {
         guard let p = players[id] else { return nil }
         // 失败的预热播放器不交给页面（交出去页面就拿着一个坏播放器等超时）
         if p.currentItem?.status == .failed { return nil }
+        // 底下的边下边播条目被换条后的 trim 清掉了：这个播放器只会一直等数据，
+        // 交给页面就是「滑回来黑屏十几秒」。丢掉它，重新备一份。
+        if let u = (p.currentItem?.asset as? AVURLAsset)?.url, let key = DYStream.id(of: u),
+           DYStreamStore.shared.entry(key) == nil {
+            players.removeValue(forKey: id)
+            obs.removeValue(forKey: id)?.invalidate()
+            p.pause()
+            DYLiveModel.log("DDPRELOAD stale \(id.suffix(6)) 流条目已清 → 重建")
+            if let last {
+                Task { @MainActor [weak self] in
+                    self?.update(last.items, current: last.index, localOnly: last.localOnly)
+                }
+            }
+            return nil
+        }
         players.removeValue(forKey: id)
         obs.removeValue(forKey: id)?.invalidate()
         handedOut.insert(id)
@@ -1415,7 +1436,12 @@ final class DYPreloader {
     /// 返回 false = 不收（已经不在预热窗口 / 播放器坏了），由页面自己销毁。
     func giveBack(_ id: String, _ p: AVPlayer) -> Bool {
         let wasOut = handedOut.remove(id) != nil
-        guard !disabled, window[id] != nil, players[id] == nil,
+        // 底下的流条目已经没了（被 trim 清掉）：收下也只是养一个永远等数据的播放器
+        var staleStream = false
+        if let u = (p.currentItem?.asset as? AVURLAsset)?.url, let key = DYStream.id(of: u) {
+            staleStream = DYStreamStore.shared.entry(key) == nil
+        }
+        guard !disabled, !staleStream, window[id] != nil, players[id] == nil,
               let item = p.currentItem, item.status != .failed,
               last?.localOnly != true || (item.asset as? AVURLAsset)?.url.isFileURL == true else {
             // 页面那份没了、这里也没有：窗口内的重新备一份
@@ -2504,9 +2530,10 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     }
 
     /// 极简模式：视频进度画成包住圆形入口的外圈。从 12 点方向顺时针走；拖动进度时变粗变亮。
+    /// 简洁模式现在有底部进度条，不再画环（同一个进度别画两遍）。
     /// 进度每 0.25 秒更新一次：只让这颗小视图订阅 DDRailProgress，别挂在根视图上（否则整屏跟着重算，1.3.13 卡顿主因）。
     private var railProgressRing: some View {
-        DDRailProgressRing(show: chromeMode.usesRail && tab != .live,
+        DDRailProgressRing(show: chromeMode == .minimal && tab != .live,
                            fg: theme.media.onMedia.color(for: scheme))
     }
 
@@ -4133,8 +4160,9 @@ struct DYUpstreamVideoPage: View {
                         if edge == .trailing { actionRail(fg, edge: edge) }
                     }
                     .padding(.horizontal, chromeSidePadding)
-                    // 简洁/极简没有底部进度条（进度画在入口外圈），底部不用再给它留 36pt（issue #4）
-                    .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 8 : 24))
+                    // 简洁模式有底部进度条（还要留出时长那一行），极简没有（进度画在入口外圈）
+                    .padding(.bottom, max(insets.bottom, 18)
+                             + (item.images.isEmpty ? (chromeMode == .minimal ? 8 : 40) : 24))
                 }
                 // 长按加速时淡出按钮和信息，画面干净；不禁用点击区，手指按在按钮上也能继续加速。
                 .opacity(boost.boosting ? 0 : 1)
@@ -4302,8 +4330,9 @@ struct DYUpstreamVideoPage: View {
     private func actions(_ fg: Color) -> some View {
         VStack(spacing: theme.media.actionGroupSpacing) {
             if let onBack {
-                // 简洁 / 极简：点开的视频（搜索、博主主页、我的、消息）没有底部进度条，
+                // 极简：点开的视频（搜索、博主主页、我的、消息）没有底部进度条，
                 // 进度画在返回键外圈——跟首页模块入口同一颗进度环（同尺寸、同线宽、同颜色）。
+                // 简洁模式现在有底部进度条 + 时长，就不再画环了。
                 ZStack {
                     Button(action: onBack) {
                         Image(systemName: "chevron.backward")
@@ -4314,7 +4343,7 @@ struct DYUpstreamVideoPage: View {
                     }
                     .buttonStyle(.plain)
                     .ddMediaGlassCircle()   // 亮色模式下视频上的玻璃控件仍保持暗色（PR #36）
-                    if chromeMode.usesRail && !usesOfflineFile {
+                    if chromeMode == .minimal && !usesOfflineFile {
                         DDRailProgressRing(show: isCurrent, fg: fg)
                     }
                 }
