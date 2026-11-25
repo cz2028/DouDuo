@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]          # 或只在手动触发时构建，去掉这段
 
+permissions:
+  contents: write             # 发布 Release 需要写权限
+
 jobs:
   build:
     runs-on: xcode-27         # GitHub 官方标签；自带 Xcode 27.2 / iOS 27.2 SDK（项目要求）
@@ -53,3 +56,23 @@ jobs:
           name: DouDuo-unsigned-ipa
           path: build/DouDuo-unsigned.ipa
           retention-days: 30
+
+      # 制品链接 30 天过期且需要登录；Release 资源是永久公开直链
+      - name: 发布 Release（永久下载链接）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VER=$(grep -m1 MARKETING_VERSION project.yml | awk '{print $2}')
+          BLD=$(grep -m1 CURRENT_PROJECT_VERSION project.yml | tr -d '"' | awk '{print $2}')
+          TAG="v${VER}-b${BLD}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          gh release view "$TAG" >/dev/null 2>&1 && gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" build/DouDuo-unsigned.ipa \
+            --title "DouDuo v${VER} (build ${BLD}) 未签名 IPA" \
+            --notes "未签名 IPA，需自行签名安装。
+主要的性能/内存修复见仓库提交记录。"
+          echo "DOWNLOAD=https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/DouDuo-unsigned.ipa" >> "$GITHUB_ENV"
+
+      - name: 输出永久下载地址
+        run: echo "🔗 $DOWNLOAD"
