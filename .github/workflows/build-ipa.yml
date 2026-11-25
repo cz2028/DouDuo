@@ -57,8 +57,9 @@ jobs:
           path: build/DouDuo-unsigned.ipa
           retention-days: 30
 
-      # 制品链接 30 天过期且需要登录；Release 资源是永久公开直链
+      # 制品链接 30 天过期且需要登录；Release 资源是永久公开直链（失败不影响产物）
       - name: 发布 Release（永久下载链接）
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

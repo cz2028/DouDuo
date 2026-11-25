@@ -1804,6 +1804,9 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || messagesCovering || authorTarget != nil }
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
+    /// 右侧功能栏是否显示（播放页的开关写这个键）。简洁/极简模式的「模块入口」也要一起收，
+    /// 否则那边藏了胶囊、这边还留一颗圆形入口，等于没藏干净。
+    @AppStorage("douyin_action_rail_visible_v1") private var actionRailVisible = true
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
     @State private var topNudge: CGFloat = 0
     /// 默认模式顶栏的垂直位置：
@@ -2473,7 +2476,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     // 长按加速时整列淡出（入口 + 按钮 + 进度环），和默认模式一致（issue #4）
                     DDBoostFade {
                         VStack(spacing: theme.media.actionGroupSpacing) {
-                            if selector {
+                            if selector, actionRailVisible {
                                 moduleMenu(edge: edge)
                             } else {
                                 Color.clear.frame(height: 50).allowsHitTesting(false)
@@ -4344,21 +4347,41 @@ struct DYUpstreamVideoPage: View {
                 .frame(width: railWidth)
                 .ddMediaGlassCapsule()
                 .frame(width: actionColumnWidth)
+                // 「更多」跟着功能栏一起藏：右侧只留「打开声音」和「显示功能按钮」两颗
+                moreMenu(fg)
             } else {
-                // 功能栏已隐藏：原位留一颗小眼睛，点一下切回（按钮在隐藏区域之外，不会把自己藏掉）
-                Button { railVisible = true; onToast?("右侧按钮已显示") } label: {
-                    Image(systemName: "eye.slash")
-                        .font(.system(size: theme.media.moreGlyphSize, weight: .regular, design: .rounded))
-                        .foregroundStyle(fg)
-                        .frame(width: 50, height: 50)
-                        .contentShape(Circle())
-                        .ddMediaGlassCircle()
+                // 功能栏已隐藏：只保留两颗——静音时出现的「打开声音」和用来还原的小眼睛
+                VStack(spacing: theme.media.actionGroupSpacing) {
+                    if muted {
+                        Button {
+                            muted = false
+                            onToast?("声音已打开")
+                        } label: {
+                            Image(systemName: "speaker.slash.fill")
+                                .font(.system(size: theme.media.moreGlyphSize, weight: .regular, design: .rounded))
+                                .foregroundStyle(fg)
+                                .frame(width: 50, height: 50)
+                                .contentShape(Circle())
+                                .ddMediaGlassCircle()
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("打开声音")
+                        .accessibilityIdentifier("douyin.unmute")
+                    }
+                    // 原位留一颗小眼睛，点一下切回（按钮在隐藏区域之外，不会把自己藏掉）
+                    Button { railVisible = true; onToast?("右侧按钮已显示") } label: {
+                        Image(systemName: "eye.slash")
+                            .font(.system(size: theme.media.moreGlyphSize, weight: .regular, design: .rounded))
+                            .foregroundStyle(fg)
+                            .frame(width: 50, height: 50)
+                            .contentShape(Circle())
+                            .ddMediaGlassCircle()
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("douyin.rail.restore")
                 }
-                .buttonStyle(.plain)
                 .frame(width: actionColumnWidth)
-                .accessibilityIdentifier("douyin.rail.restore")
             }
-            moreMenu(fg)
         }
         .themeShadow(.mediaLabel)
     }

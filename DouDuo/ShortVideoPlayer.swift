@@ -1186,8 +1186,8 @@ struct PlayerPage: View {
     private func progressBar(_ cur: Double) -> some View {
         let pos = seeking ? seekPreview : cur
         let frac = duration > 0 ? max(0, min(1, pos / duration)) : 0
-        // 不显示时间（拖动时预览气泡里有），只留细进度条
-        return VStack(spacing: 0) {
+        // 拖动时预览气泡里有位置，进度条右侧常驻总时长（老板 11-25：要看视频有多长）
+        return VStack(spacing: 2 * ui) {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     // 平时半透明不挡画面，只有进度条拖动时才变实
@@ -1214,6 +1214,21 @@ struct PlayerPage: View {
                         requestPreview(seekPreview)
                     }
                     .onEnded { _ in if seeking { seekTo(seekPreview); seeking = false; previewImage = nil } })
+            // 时长：平时右侧显示总长；拖动时左侧再显示「拖到哪」
+            HStack(spacing: 8 * ui) {
+                if seeking {
+                    Text(fmt(pos))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text(fmt(duration))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .font(.caption2.weight(.medium)).monospacedDigit()
+            .padding(.horizontal, 16 * ui)
+            .opacity(duration > 0 ? 1 : 0)
+            .accessibilityHidden(true)
         }
     }
 
@@ -1354,6 +1369,9 @@ struct PlayerPage: View {
             pre.currentItem?.forwardPlaybackEndTime = CMTime(seconds: h, preferredTimescale: 600)
         }
         p.automaticallyWaitsToMinimizeStalling = true
+        // 预热池里出来的播放器被 giveBack 时是静音的（预热不该出声），这里按当前设置还原，
+        // 否则「本来开着声音、上滑回来」会变成哑的。
+        p.isMuted = seamAudio.mode == .noAudio || muted
         player = p
         if knownDuration > 0 { duration = knownDuration }
         let gen = AVAssetImageGenerator(asset: asset)
@@ -1390,6 +1408,16 @@ struct PlayerPage: View {
         if shouldPlay {
             DYSwipeProbe.active(id)
             watchdog(p); telemetry.begin(p, id: id, duration: knownDuration)
+            // 复用的是预热池里那个播放器（上滑回上一条就是这条路径）：它可能已经被上一次播放停下，
+            // 边下边播的会话也断过，item 会永远停在 unknown —— 表现为「滑回去黑屏」。
+            // 2.2 秒还没出画面就重建一次（走直连地址），不必等 5 秒看门狗。
+            if pre != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+                    guard player === p, isActive, isPlaying, !firstFrame, p.rate == 0, vlc == nil else { return }
+                    DYLiveModel.log("DDREENTRY \(id.suffix(6)) 复用播放器 2.2s 无画面 status=\(p.currentItem?.status.rawValue ?? -1) → 重建")
+                    retryPlayback()
+                }
+            }
         }
         else { primeFirstFrame(p) }
         #if DEBUG
@@ -1603,7 +1631,11 @@ struct PlayerPage: View {
             let position = p.currentTime().seconds
             let waiting = offlineContext != nil && p.timeControlStatus == .waitingToPlayAtSpecifiedRate &&
                 (!position.isFinite || position <= start + 0.02)
-            let stuck = p.currentItem == nil || failedNow || position < 0.1 || waiting
+            // 上滑回来复用预热播放器 / 边下边播会话已断：item 停在 unknown、rate 一直是 0，
+            // 而播放位置又不在 0 秒附近 → 老判据（position < 0.1）不成立，看门狗永不触发，页面就一直黑着。
+            // 「该播却根本没在播」也算卡死，重建一次（rebuild 走直连地址，绕开坏掉的边下边播）。
+            let notAdvancing = isPlaying && p.timeControlStatus != .playing && p.rate == 0
+            let stuck = p.currentItem == nil || failedNow || position < 0.1 || waiting || notAdvancing
             guard stuck else { return }
             let st = p.currentItem?.status.rawValue ?? -1
             let err = p.currentItem?.error.map { "\(($0 as NSError).domain)/\(($0 as NSError).code)" } ?? "-"
