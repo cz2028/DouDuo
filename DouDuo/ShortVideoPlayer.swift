@@ -589,7 +589,6 @@ struct PlayerPage: View {
     @State private var playbackID = UUID()
     /// 页面是否还挂着：延后执行的建播放器要先看它（页面被回收后不能再领预热池的播放器）
     @State private var pageLife = PageLife()
-    @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @State private var videoScale: CGFloat = 1
     @Environment(\.dyUsesClassicVideoLayout) private var usesClassicVideoLayout
     @Environment(\.dyCommentVideoFrame) private var commentVideoFrame
@@ -656,14 +655,8 @@ struct PlayerPage: View {
             // All playback entry points share this backdrop. Mask the player's
             // opaque letterbox below so uncovered areas reveal the blurred cover.
             // 老板要求「不要封面、不要预览图」：没出画面就保持纯黑（原来这里铺模糊封面，起播时会闪一下）
-            // 实时环境光：盖在模糊封面上，出第一帧后淡入；VLC 兜底时没有 AVPlayerItem，保留封面
-            if ambientLevel > 0, vlc == nil, let player {
-                DYAmbientBackdrop(player: player, active: isActive, dim: Double(ambientLevel) / 100, fillWidth: fillWidth)
-                    // 侧栏评论时也铺满上下安全区（左右由外层裁剪），底部不留白边 / 黑边
-                    .ignoresSafeArea(edges: restrictsPlaybackToPane ? .vertical : .all)
-                    .allowsHitTesting(false)
-                    .accessibilityIdentifier("douyin.video.ambient")
-            }
+            // 环境光（背景取色）已移除：它要每秒从解码器回读整帧像素，
+            // 是常驻内存和截屏卡顿的大头，收益只是留边的一点颜色。留边一律纯黑。
             if usesClassicVideoLayout {
                 GeometryReader { geometry in
                     let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect,

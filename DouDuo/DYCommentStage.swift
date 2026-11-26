@@ -69,7 +69,7 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                 .environment(\.dyTouchpadEngaged, padActive)
                 .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
                 .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
-                // 侧栏评论时视频区要裁边：播放器的环境光底（DYAmbientBackdrop）会铺满整屏宽，盖住右侧评论栏
+                // 侧栏评论时视频区要裁边，别让视频底铺到右侧评论栏下面
                 //（内屏横屏评论纯黑的根因；dd405e6 拿掉这个裁边后 11-18 晚复发，老板 11-19 指出之前修过）。
                 .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
             if layout.showsPane {

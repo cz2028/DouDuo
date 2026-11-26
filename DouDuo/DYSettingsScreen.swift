@@ -19,7 +19,6 @@ struct DYSettingsScreen: View {
     @AppStorage(DDAppearance.key) private var appearance = DDAppearance.dark.rawValue
     @AppStorage(DDChromeMode.key) private var chromeMode = DDChromeMode.classic.rawValue
     // 播放
-    @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @AppStorage(DYPlaybackQuality.storageKey) private var playQuality = DYPlaybackQuality.p720.rawValue
     @AppStorage(DYAutoPiP.storageKey) private var autoPiP = false
     // 内容
@@ -78,12 +77,6 @@ struct DYSettingsScreen: View {
                 }
 
                 Section {
-                    row(.ambient) {
-                        Picker("环境光", selection: $ambientLevel) {
-                            ForEach(DYVideoAmbient.levels, id: \.self) { Text(DYVideoAmbient.title($0)).tag($0) }
-                        }
-                        .accessibilityIdentifier("settings.ambient")
-                    }
                     row(.playQuality) {
                         Picker("播放清晰度", selection: $playQuality) {
                             ForEach(DYPlaybackQuality.allCases) { Text($0.title).tag($0.rawValue) }
@@ -347,7 +340,7 @@ struct DYSettingsScreen: View {
 
 /// 每个设置项的 ⓘ 说明：开 / 关分别会怎样（老板 11-24）
 enum DYSettingInfo: String, Identifiable {
-    case chrome, ambient, launchMuted, danmaku, danmakuDensity, keywords, hideSeen, feedLive, feedAds, feedProduct
+    case chrome, launchMuted, danmaku, danmakuDensity, keywords, hideSeen, feedLive, feedAds, feedProduct
     case playQuality
     case wifiSaver, cellSaver, cacheCount, dmNotify, dmDetail
     case landscapeOnly, portraitMix, dedupe, autoPiP, replyKeyboard, webComment, streaming
@@ -356,7 +349,6 @@ enum DYSettingInfo: String, Identifiable {
     var title: String {
         switch self {
         case .chrome: "界面模式"
-        case .ambient: "环境光"
         case .playQuality: "播放清晰度"
         case .launchMuted: "打开时默认静音"
         case .danmaku: "显示弹幕"
@@ -385,7 +377,6 @@ enum DYSettingInfo: String, Identifiable {
     var lines: [(String, String)] {
         switch self {
         case .chrome: [("说明", "四种播放页布局：默认、简洁、极简、经典。只改按钮和信息怎么摆，不影响推荐和播放。")]
-        case .ambient: [("说明", "视频没铺满屏幕时，四周的空白跟着画面颜色变化。分关 / 亮 / 中 / 暗 / 很暗；选「关」就是纯黑边。")]
         case .playQuality: [("说明", "拉视频时只挑这个范围内的清晰度档，和抖音客户端一样不给原画。\n\n720p：解码和内存约为 1080p 的 40%，肉眼几乎看不出差别，截屏、切后台时的系统卡顿明显减轻。\n540p：最省，发热最低。\n1080p / 原画：更清晰，但 2K/4K 视频会让解码器和系统合成压力变大。\n\n改完立刻对新拉的视频生效；已经缓存在本机的旧清晰度文件播完自然消失。")]
         case .launchMuted: [("开", "每次打开 DouDuo 都先静音，并提示「已静音播放」；不会打断你正在放的音乐。"), ("关", "打开就带声音播放。")]
         case .danmaku: [("开", "视频上方 1/3 区域显示弹幕。"), ("关", "不显示弹幕，发弹幕仍在播放页菜单里。")]
