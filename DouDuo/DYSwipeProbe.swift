@@ -17,16 +17,16 @@ enum DYSwipeProbe {
     private static let target = Tick()
 
     static func lift() {
+        // 诊断日志已停用：不再启动 displaylink（保留签名，调用点不动）
+        #if false
         liftAt = CACurrentMediaTime(); activeAt = 0; rateAt = 0; playingAt = 0
         maxGap = 0; drops = 0; lastFrame = 0
         link?.invalidate()
         let l = CADisplayLink(target: target, selector: #selector(Tick.tick(_:)))
-        // 诊断探针 1.2 秒后自停；限到 30fps，避免刷视频连续滑动时主线程被探针反复唤醒。
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 30, preferred: 30)
         l.add(to: .main, forMode: .common)
         link = l
-        // 1.2 秒后收尾（没走完的也记下，方便看卡在哪段）
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { finish(moved: nil) }
+        #endif
     }
     static func active(_ vid: String) { id = vid; if activeAt == 0 { activeAt = CACurrentMediaTime() } }
     static func rate() { if rateAt == 0 { rateAt = CACurrentMediaTime() } }
@@ -36,9 +36,12 @@ enum DYSwipeProbe {
     /// 阶段打点：长帧发生时，把这帧前后 150ms 内做过什么事打出来，定位主线程被谁占住
     private static var marks: [(t: CFTimeInterval, s: String)] = []
     static func mark(_ text: String) {
+        // 诊断日志已停用：不记录阶段打点（保留签名，调用点不动）
+        #if false
         let now = CACurrentMediaTime()
         marks.append((now, text))
         if marks.count > 200 { marks.removeFirst(100) }
+        #endif
     }
 
     fileprivate static func frame(_ ts: CFTimeInterval) {

@@ -2212,7 +2212,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             if DDPlayback.shared.appIsActive { saveSession() }
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
-        .onChange(of: feed.items.map(\.id)) { _, _ in feedGrew() }
+        .onChange(of: feed.items.count) { _, _ in feedGrew() }
         .onReceive(DYOfflineDownloads.shared.$isOffline.removeDuplicates()) { offline in
             Task { await updateOfflineFeed(offline) }
         }
@@ -3481,7 +3481,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             if DDPlayback.shared.appIsActive { saveSession() }
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
-        .onChange(of: feed.items.map(\.id)) { _, _ in feedGrew() }
+        .onChange(of: feed.items.count) { _, _ in feedGrew() }
         .onReceive(DYOfflineDownloads.shared.$isOffline.removeDuplicates()) { offline in
             Task { await updateOfflineFeed(offline) }
         }

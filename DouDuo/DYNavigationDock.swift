@@ -311,20 +311,64 @@ private struct DYToolbarFrameReader: UIViewRepresentable {
         private var lastFrame: CGRect = .zero
         private var lastHeight: CGFloat = 0
         private var candidateFrame: CGRect = .zero
-        private var displayLink: CADisplayLink?
-        private lazy var observer = FrameObserver(view: self)
+        /// 观察原生工具栏宿主的位置变化。原来挂 5fps CADisplayLink 常驻扫描，
+        /// 但只上报「连续两次一致」的稳定 frame——中间帧本来就丢弃。
+        /// 现在改事件驱动：宿主 frame / window bounds 变化、旋转、App 激活时才采样，
+        /// 静止时零开销；每次事件后补采一次满足 settle 判定。
+        private var observations: [NSObjectProtocol] = []
+        private var kvo: [NSKeyValueObservation] = []
+        private var sampleWork: DispatchWorkItem?
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            displayLink?.invalidate()
-            displayLink = nil
-            guard window != nil else { return }
-            let link = CADisplayLink(target: observer, selector: #selector(FrameObserver.sample))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 5, maximum: 10, preferred: 5)
-            link.add(to: .main, forMode: .common)
-            displayLink = link
+            observations.forEach { NotificationCenter.default.removeObserver($0) }
+            observations.removeAll()
+            kvo.removeAll()
+            sampleWork?.cancel()
+            guard let window else { return }
+
+            // 宿主（SwiftUI toolbar hosting view）自己不会被 layout，KVO 它的 center/bounds。
+            // didMoveToWindow 时工具栏层级可能还没挂好，延后一帧补装一次。
+            installHostKVO()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil else { return }
+                self.installHostKVO()
+            }
+            kvo.append(window.observe(\.bounds) { [weak self] _, _ in self?.scheduleSample() })
+            let nc = NotificationCenter.default
+            for name in [UIDevice.orientationDidChangeNotification, UIApplication.didBecomeActiveNotification] {
+                observations.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    self?.scheduleSample()
+                })
+            }
+            scheduleSample()
         }
-        deinit { displayLink?.invalidate() }
+
+        /// 宿主视图层级可能晚于 didMoveToWindow 建立；补装一次，kvo.count<2 保证不重复。
+        private func installHostKVO() {
+            guard let host = superview, kvo.count < 2 else { return }
+            kvo.append(host.observe(\.center) { [weak self] _, _ in self?.scheduleSample() })
+            kvo.append(host.observe(\.bounds) { [weak self] _, _ in self?.scheduleSample() })
+        }
+
+        deinit {
+            observations.forEach { NotificationCenter.default.removeObserver($0) }
+            sampleWork?.cancel()
+        }
+
+        /// 原生工具栏动画会有中间帧；延后 0.1s 再补采一次，拿到稳定位置。
+        private func scheduleSample() {
+            sampleWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.window != nil else { return }
+                self.reportFrame()
+                let settle = DispatchWorkItem { [weak self] in self?.reportFrame() }
+                self.sampleWork = settle
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: settle)
+            }
+            sampleWork = work
+            DispatchQueue.main.async(execute: work)
+        }
 
         // A native toolbar can move its host without laying out our child.
         // Sample only this view's public window rectangle and publish changes
@@ -338,14 +382,8 @@ private struct DYToolbarFrameReader: UIViewRepresentable {
             guard frame != lastFrame || height != lastHeight else { return }
             lastFrame = frame
             lastHeight = height
-            DispatchQueue.main.async { [weak self] in self?.onChange?(frame, height) }
+            onChange?(frame, height)
         }
-    }
-
-    private final class FrameObserver {
-        weak var view: FrameView?
-        init(view: FrameView) { self.view = view }
-        @objc func sample() { view?.reportFrame() }
     }
 }
 

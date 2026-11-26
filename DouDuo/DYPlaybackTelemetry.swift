@@ -30,18 +30,7 @@ final class DYPlaybackTelemetry {
         let base = p.currentTime().seconds
         DYLiveModel.log("DDSWIPEIN \(id) dur=\(Int(duration)) ready=\(ready) buf=\(String(format: "%.1f", buf))s local=\(local)")
         // .initial：begin 时播放器可能已经在 playing（上一帧就 rate=1 了），只听 .new 会漏掉这次起播
-        // 起播慢诊断：0.6 / 1.5 / 2.5 秒还没动，记下播放器在等什么、边下边播那边是什么状态（老板 11-24：划到后停在第一帧约 3 秒）
-        for delay in [0.6, 1.5, 2.5] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak p] in
-                guard let self, let p, self.player === p, self.startAt == t0 else { return }
-                let it = p.currentItem
-                let ranges = (it?.loadedTimeRanges ?? []).map { r -> String in
-                    let v = r.timeRangeValue; return String(format: "%.1f-%.1f", v.start.seconds, CMTimeRangeGetEnd(v).seconds) }.joined(separator: ",")
-                let why = p.reasonForWaitingToPlay.map { $0.rawValue.replacingOccurrences(of: "AVPlayerWaiting", with: "").replacingOccurrences(of: "Reason", with: "") } ?? "-"
-                let stream = DYStreamStore.shared.debugLine(forVideo: id)
-                DYLiveModel.log("DDWAIT \(id.suffix(6)) +\(delay)s tcs=\(p.timeControlStatus.rawValue) rate=\(p.rate) why=\(why) st=\(it?.status.rawValue ?? -1) keepUp=\(it?.isPlaybackLikelyToKeepUp ?? false) empty=\(it?.isPlaybackBufferEmpty ?? false) loaded=[\(ranges)] pos=\(String(format: "%.2f", p.currentTime().seconds)) muted=\(p.isMuted) | \(stream)")
-            }
-        }
+        // 起播慢诊断的 0.6/1.5/2.5 秒延时打点已停用（日志不要了）
         obs = p.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] pl, _ in
             let status = pl.timeControlStatus
             let pos = pl.currentTime().seconds
@@ -54,7 +43,6 @@ final class DYPlaybackTelemetry {
         switch s {
         case .playing:
             DYSwipeProbe.playing()
-            if startAt != nil { watchMove(base: base) }
             if let start = startAt {
                 startAt = nil
                 DYLiveModel.log("DDSTARTUP \(id) 起播=\(String(format: "%.2f", Date().timeIntervalSince(start)))s dur=\(Int(duration))")
@@ -74,20 +62,6 @@ final class DYPlaybackTelemetry {
             }
         default: break
         }
-    }
-
-    /// 画面真正往前走（currentTime 越过起点）才算「动起来」
-    private func watchMove(base: Double) {
-        guard let p = player else { return }
-        var n = 0
-        func poll() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { [weak self] in
-                guard let self, self.player === p else { return }
-                if p.currentTime().seconds > base + 0.01 { DYSwipeProbe.moved(); return }
-                n += 1; if n < 150 { poll() }
-            }
-        }
-        poll()
     }
 
     func end(reason: String = "leave") {

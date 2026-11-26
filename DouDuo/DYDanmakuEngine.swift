@@ -317,15 +317,23 @@ final class DYDanmakuEngineView: UIView {
         }
     }
 
+    /// 复用缓冲：freeLane 每次弹幕出场都调用，原来每次新建一个 lanes 长度的可选数组。
+    /// 保留一块缓冲反复清零，消除高频小分配。
+    private var laneBuffer: [DYFlying?] = []
+
     /// 一条轨道能放：上一条的尾巴已经离开右边缘至少 gap，且新的（可能更快）在上一条离屏之前追不上它
     private func freeLane(at t: Double, width: CGFloat, speed: CGFloat, screen: CGFloat) -> Int? {
-        var lastOn = [DYFlying?](repeating: nil, count: lanes)
+        if laneBuffer.count != lanes {
+            laneBuffer = [DYFlying?](repeating: nil, count: lanes)
+        } else {
+            for i in laneBuffer.indices { laneBuffer[i] = nil }
+        }
         for f in flying where f.lane < lanes {
-            if let cur = lastOn[f.lane], cur.born >= f.born { continue }
-            lastOn[f.lane] = f
+            if let cur = laneBuffer[f.lane], cur.born >= f.born { continue }
+            laneBuffer[f.lane] = f
         }
         for lane in 0..<lanes {
-            guard let prev = lastOn[lane] else { return lane }
+            guard let prev = laneBuffer[lane] else { return lane }
             let tail = prev.tailX(at: t)
             guard tail + DYDanmakuStyle.gap <= screen else { continue }
             if speed > prev.speed {

@@ -185,14 +185,11 @@ final class DYLiveModel: ObservableObject {
         stop()
     }
 
-    /// 写日志不占主线程：时间戳在调用处取，落盘在后台串行队列（滑动起播那一帧不能做磁盘 IO）
-    nonisolated static func log(_ s: String) {
-        let now = Date()
-        DDLogWriter.queue.async {
-            let line = DDLogWriter.formatter.string(from: now) + " " + s + "\n"
-            DDLogWriter.append(line)
-        }
-    }
+    /// 日志已停用（老板 11-26 定：不要写日志文件）。
+    /// 保留签名 + @autoclosure：所有现有调用点不用改、编译照过；
+    /// 空实现意味着闭包不会执行，连字符串插值的构造开销一起归零。
+    /// 以后要恢复诊断日志，把下面的实现替换回来即可。
+    nonisolated static func log(_ s: @autoclosure () -> String) {}
 
     init() {
         vlc.onProgress = { [weak self] time in

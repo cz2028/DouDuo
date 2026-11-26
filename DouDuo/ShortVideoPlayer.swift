@@ -2470,6 +2470,8 @@ enum DYResumePolicy {
     private static let target = Tick()
 
     static func begin(_ what: String, mode: String, player p: AVPlayer?) {
+        // 诊断日志已停用：探针不再启动 displaylink（保留签名，调用点不动）
+        #if false
         link?.invalidate()
         label = "\(what) mode=\(mode)"; player = p
         start = CACurrentMediaTime(); last = 0; maxGap = 0; drops = 0; stallAt = []; lastT = -1; frozen = 0; frozenEarly = 0; maxJump = 0
@@ -2480,6 +2482,7 @@ enum DYResumePolicy {
         l.add(to: .main, forMode: .common)
         link = l
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { finish() }
+        #endif
     }
     fileprivate static func frame(_ ts: CFTimeInterval) {
         if last > 0 {
