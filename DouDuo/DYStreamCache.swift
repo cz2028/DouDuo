@@ -141,6 +141,17 @@ final class DYStreamEntry: @unchecked Sendable {
     var infoTask: Task<Void, Error>?
     let lock = NSLock()
 
+    /// 开头这段是否已经下好、够起播。
+    /// AVPlayerItem 要到 readyToPlay 才算「可翻页」，网络慢时要等好几秒；
+    /// 但我们的边下边播头部通常早得多，头部到位就该放行（页面中央有加载提示兜底）。
+    func hasHead(_ minBytes: Int64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let base = mediaStart ?? 0
+        return ranges.contains { r in
+            r.lowerBound <= base + 4096 && r.upperBound - max(r.lowerBound, base) >= minBytes
+        }
+    }
+
     init(key: String, item: DYAweme, sources: [URL]) {
         id = item.id; self.key = key; self.item = item; self.sources = sources
     }

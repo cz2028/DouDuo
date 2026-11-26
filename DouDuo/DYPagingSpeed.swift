@@ -196,6 +196,8 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     private var jumpFixes = 0
     /// 每条被拦次数（同一条拦太多就放行，避免永久卡住）
     private var blockedCount: [String: Int] = [:]
+    /// 这条第一次被拦的时刻：网络很差时不能让用户一直被弹回，等够了就直接放行
+    private var blockedAt: [String: CFTimeInterval] = [:]
     private var target: CGPoint?
     private var start = CGPoint.zero
     private var startTime: CFTimeInterval = 0
@@ -281,17 +283,26 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         let curIndex = baseIndex ?? index
         if index > curIndex, !DYReadiness.isReady(items[index]) {
             let id = items[index]
-            blockedCount[id, default: 0] += 1
-            // 同一条拦了 3 次还没就绪，就放行（可能是地址失效/长视频加载慢；宁可黑一下也不能把人卡死）
-            if blockedCount[id, default: 0] <= 3 {
+            let n = (blockedCount[id] ?? 0) + 1
+            blockedCount[id] = n
+            let now = CACurrentMediaTime()
+            let first = blockedAt[id] ?? now
+            blockedAt[id] = first
+            let waited = now - first
+            // 以前最多弹回 3 次（要滑 4~5 次才过得去），老板实测就是「滑不动」。
+            // 现在最多弹回 1 次，且首次拦截过 1.2 秒后不管好没好都放行：
+            // 人员操作优先，真没加载到由页面中央的「加载中 / 缓冲中」提示接管。
+            if n <= 1, waited < 1.2 {
                 let curY = CGFloat(curIndex) * scrollView.bounds.height - scrollView.adjustedContentInset.top
                 targetID = items[curIndex]
                 target = CGPoint(x: scrollView.contentOffset.x, y: curY)
                 targetContentOffset.pointee = scrollView.contentOffset
-                DYLiveModel.log("DDBLOCK next=\(id.suffix(4)) 未就绪，弹回当前页 #\(blockedCount[id, default: 0])")
+                DYLiveModel.log("DDBLOCK next=\(id.suffix(4)) 未就绪，弹回 1 次（已等 \(String(format: "%.1f", waited))s）")
                 return
             }
-            DYLiveModel.log("DDFORCE next=\(id.suffix(4)) 拦了 3 次仍未就绪，放行")
+            blockedCount[id] = nil
+            blockedAt[id] = nil
+            DYLiveModel.log("DDFORCE next=\(id.suffix(4)) 未就绪但放行 n=\(n) waited=\(String(format: "%.1f", waited))s")
         }
         targetID = items[index]
         target = targetContentOffset.pointee

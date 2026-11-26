@@ -1592,6 +1592,12 @@ final class DYPreloader {
         if localOnly { DYReadiness.mark(a.id); return }
         if let local = DYVideoCache.localURL(a.id), FileManager.default.fileExists(atPath: local.path) {
             DYReadiness.mark(a.id)
+            return
+        }
+        // 边下边播的头部已到位（约 1MB，720p 够播好几秒）也算可翻页：
+        // 不必干等 AVPlayerItem 走完 readyToPlay，那在正常网络下也要几秒。
+        if let e = DYStreamStore.shared.entry(forVideo: a.id), e.hasHead(1_000_000) {
+            DYReadiness.mark(a.id)
         }
     }
 
@@ -4448,6 +4454,18 @@ struct DYUpstreamVideoPage: View {
                             onToast?(autoFit ? "铺满：开" : "完整画面")
                         }
                     }
+                    // 显隐同一颗眼睛：显示时点它藏起来，藏起来后原位的小眼睛点它放回来。
+                    // 不再塞进「更多」菜单，省掉每次两层点击。
+                    Button { railVisible = false; onToast?("右侧按钮已隐藏") } label: {
+                        Image(systemName: "eye")
+                            .font(.system(size: theme.media.actionGlyphSize, weight: .regular, design: .rounded))
+                            .foregroundStyle(fg)
+                            .frame(width: 34, height: 36)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("隐藏右侧功能按钮")
+                    .accessibilityIdentifier("douyin.rail.hide")
                 }
                 .padding(.vertical, 8)
                 .frame(width: railWidth)
@@ -4582,8 +4600,6 @@ struct DYUpstreamVideoPage: View {
                     .accessibilityIdentifier("douyin.quick.bgplay")
                 Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     .accessibilityIdentifier("douyin.quick.autonext")
-                Toggle(isOn: $railVisible) { Label("显示右侧功能按钮", systemImage: "eye") }
-                    .accessibilityIdentifier("douyin.quick.rail")
             }
             if bridge != nil {
                 Button("稍后再看", systemImage: "clock") { addWatchLater() }
