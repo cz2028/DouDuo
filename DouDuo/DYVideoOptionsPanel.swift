@@ -3,34 +3,47 @@ import SwiftUI
 /// 播放倍速档位与自定义解析（播放页菜单 / 视频设置面板共用）。
 enum DYPlaybackRates {
     static let customKey = "douyin_custom_rate_v1"
-    static let presets: [Double] = [0.1, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
     static let minRate = 0.1
     static let maxRate = 4.0
+    static let `default` = 1.0
+
     static func title(_ r: Double) -> String { r == 1 ? "1" : String(format: "%g", r) }
-    static func isCustom(_ r: Double) -> Bool { !presets.contains(where: { abs($0 - r) < 0.001 }) }
-    /// 解析用户输入，限幅到 0.1~4.0；无效输入返回 nil。
+
+    /// 把单个 token 解析成倍速；兼容中文输入法小数点。无效返回 nil。
     static func parse(_ s: String) -> Double? {
         var t = s.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "倍", with: "")
-        // 数字/标点键盘在不同输入法下小数点可能是全角或中文句号，统一成 "."，
-        // 否则用户输入 "1．5" / "1。5" 会被判非法而退回 1.0。
-        for mark in ["。", "．", "，", ",", "、"] {
-            t = t.replacingOccurrences(of: mark, with: ".")
-        }
+        for mark in ["。", "．"] { t = t.replacingOccurrences(of: mark, with: ".") }
         guard let v = Double(t), v.isFinite else { return nil }
         return min(maxRate, max(minRate, v))
     }
 
-    /// 播放页快捷按钮的循环顺序：常用档 + 用户自定义档（自定义值也参与循环）。
-    static func cycle(_ custom: String) -> [Double] {
-        var arr = [0.5, 1.0, 1.25, 1.5, 2.0, 3.0]
-        if let r = parse(custom), !arr.contains(where: { abs($0 - r) < 0.001 }) { arr.append(r) }
-        return arr.sorted()
+    /// 解析用户输入的整串倍速列表：逗号 / 中文逗号 / 顿号 / 空格都能分隔。
+    /// 去重、限幅、过滤非法值；空或全非法时保底 [1]，保证按钮至少有一档可切。
+    static func parseList(_ s: String) -> [Double] {
+        var normalized = s
+        for sep in ["，", "、", ";", "；", " "] {
+            normalized = normalized.replacingOccurrences(of: sep, with: ",")
+        }
+        var out: [Double] = []
+        for token in normalized.split(separator: ",") {
+            guard let v = parse(String(token)) else { continue }
+            if !out.contains(where: { abs($0 - v) < 0.001 }) { out.append(v) }
+        }
+        return out.isEmpty ? [`default`] : out
     }
 
-    /// 循环到下一档；当前值不在序列里时从第一档开始。
+    /// 输入框文字的规范写法：逗号分隔，用于保存时回写。
+    static func serialize(_ list: [Double]) -> String {
+        (list.isEmpty ? [`default`] : list).map(title).joined(separator: ",")
+    }
+
+    /// 快捷按钮的循环档位：完全来自输入框，没有任何硬编码预设。
+    static func cycle(_ custom: String) -> [Double] { parseList(custom) }
+
+    /// 循环到下一档；当前值不在列表里时从第一档开始。
     static func next(_ current: Double, custom: String) -> Double {
         let arr = cycle(custom)
-        guard let i = arr.firstIndex(where: { abs($0 - current) < 0.001 }) else { return arr.first ?? 1.0 }
+        guard let i = arr.firstIndex(where: { abs($0 - current) < 0.001 }) else { return arr[0] }
         return arr[(i + 1) % arr.count]
     }
 }
@@ -50,7 +63,7 @@ struct DYVideoOptionsPanel: View {
     @State private var listAtTop = true
     @State private var headerHeight: CGFloat = 44
     @State private var showCustomRate = false
-    @AppStorage(DYPlaybackRates.customKey) private var customRateText = ""
+    @AppStorage(DYPlaybackRates.customKey) private var customRateText = "1"
     var onDislike: (() -> Void)?
     var onSendDanmaku: (() -> Void)?
     var onWatchLater: (() -> Void)?
@@ -99,10 +112,8 @@ struct DYVideoOptionsPanel: View {
                                 .font(.subheadline.weight(.semibold))
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 6) {
-                                    // 显示当前实际生效的倍速；点开就把这个值填进输入框。
-                                    // 输入框是唯一数据源：切换档位/改值都从这里走，不列预设档。
+                                    // 显示当前实际生效的倍速；点开编辑整串倍速列表。
                                     rateChip(DYPlaybackRates.title(playbackRate), selected: true) {
-                                        customRateText = String(format: "%g", playbackRate)
                                         showCustomRate = true
                                     }
                                     .accessibilityLabel("当前倍速 \(playbackRate)")
@@ -154,19 +165,24 @@ struct DYVideoOptionsPanel: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.options.panel")
-        .onAppear { customRateText = String(format: "%g", playbackRate) }
+        .onAppear {
+            // 用户改过列表后，当前倍速可能已不在列表里，纠正到第一档
+            if !DYPlaybackRates.cycle(customRateText).contains(where: { abs($0 - playbackRate) < 0.001 }) {
+                playbackRate = DYPlaybackRates.cycle(customRateText)[0]
+            }
+        }
         .alert("自定义倍速", isPresented: $showCustomRate) {
-            TextField("0.1 ~ 4.0", text: $customRateText)
+            TextField("1,1.5,2", text: $customRateText)
                 .keyboardType(.numbersAndPunctuation)
             Button("取消", role: .cancel) {}
             Button("确定") {
-                // 空 / 无效输入回退到当前正在用的倍速，不硬编码默认值
-                let r = DYPlaybackRates.parse(customRateText) ?? playbackRate
-                customRateText = String(format: "%g", r)
-                playbackRate = r
+                let list = DYPlaybackRates.parseList(customRateText)
+                customRateText = DYPlaybackRates.serialize(list)
+                // 当前倍速不在新列表里就落到第一档
+                if !list.contains(where: { abs($0 - playbackRate) < 0.001 }) { playbackRate = list[0] }
             }
         } message: {
-            Text("输入 0.1 到 4.0 之间的一个倍速（支持小数），例如 1.5。")
+            Text("可填多个倍速，用逗号隔开（0.1~4.0），例如 1,1.5,2。播放页的倍速按钮只在这些值之间切换；留空会保留 1。")
         }
     }
 
