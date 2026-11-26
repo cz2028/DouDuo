@@ -4291,25 +4291,25 @@ struct DYUpstreamVideoPage: View {
             if c, onBack == nil { DYBoostRouter.shared.adopt(boost) }
         }
         .onAppear {
-            // 自定义为空 = 1.0；菜单显示值就是实际播放倍速
-            playbackRate = DYPlaybackRates.menuValue(customRateText)
+            // 输入框跟随当前实际倍速；用户改了输入框才改播放倍速，不再反过来覆盖。
+            customRateText = String(format: "%g", playbackRate)
             if isCurrent, onBack == nil { DYBoostRouter.shared.adopt(boost) }
         }
         // 弹幕：轮到这条时才拉（一次拉整条视频的）——共用 DYDanmakuModel
         .task(id: isCurrent) { await dm.load(item, isCurrent: isCurrent, bridge: bridge) }
         .alert("自定义倍速", isPresented: $showCustomRate) {
             TextField("0.1 ~ 4.0", text: $customRateText)
-                .keyboardType(.decimalPad)
+                .keyboardType(.numbersAndPunctuation)
             Button("取消", role: .cancel) {}
             Button("确定") {
-                // 空 / 无效输入一律回 1.0，并写回显示值
-                let r = DYPlaybackRates.parse(customRateText) ?? 1.0
+                // 空 / 无效输入回退到当前正在用的倍速，不硬编码默认值
+                let r = DYPlaybackRates.parse(customRateText) ?? playbackRate
                 customRateText = String(format: "%g", r)
                 playbackRate = r
                 onToast?(rateTitle(r))
             }
         } message: {
-            Text("输入 0.1 到 4.0 之间的倍速，例如 0.3、1.8、3.0。")
+            Text("输入 0.1 到 4.0 之间的一个倍速（支持小数），例如 1.5。")
         }
     }
 
@@ -4562,8 +4562,8 @@ struct DYUpstreamVideoPage: View {
         .accessibilityIdentifier(id)
     }
 
-    /// 播放页快捷倍速：0.5 → 1 → 1.25 → 1.5 → 2 → 3 →（自定义值）→ 回到头。
-    /// 选中的值同时写回自定义，菜单里显示的和实际播放的永远一致。
+    /// 播放页快捷倍速：0.5 → 1 → 1.25 → 1.5 → 2 → 3 →（输入框里的值）→ 回到头。
+    /// 切完写回输入框，输入框、菜单显示、实际播放三者始终一致。
     private func cycleRate() {
         let next = DYPlaybackRates.next(playbackRate, custom: customRateText)
         playbackRate = next
@@ -4606,13 +4606,13 @@ struct DYUpstreamVideoPage: View {
                     }
                     .accessibilityIdentifier(DYVideoFit.moreIdentifier)
                 }
-                // 不再列预设档：直接显示自定义填的值（没填就是 1.0），点开改；
-                // 挨个切档用画面上的快捷倍速按钮。
+                // 显示当前实际倍速；点开就把这个值填进输入框。
+                // 挨个切档用画面上的快捷倍速按钮，切完输入框同步更新。
                 Button {
-                    customRateText = String(format: "%g", DYPlaybackRates.menuValue(customRateText))
+                    customRateText = String(format: "%g", playbackRate)
                     showCustomRate = true
                 } label: {
-                    Label("倍速 · \(DYPlaybackRates.menuTitle(customRateText))×", systemImage: "speedometer")
+                    Label("倍速 · \(DYPlaybackRates.title(playbackRate))×", systemImage: "speedometer")
                 }
                 .accessibilityIdentifier("douyin.quick.speed")
                 Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
