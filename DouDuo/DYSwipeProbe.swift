@@ -21,6 +21,8 @@ enum DYSwipeProbe {
         maxGap = 0; drops = 0; lastFrame = 0
         link?.invalidate()
         let l = CADisplayLink(target: target, selector: #selector(Tick.tick(_:)))
+        // 诊断探针 1.2 秒后自停；限到 30fps，避免刷视频连续滑动时主线程被探针反复唤醒。
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 30, preferred: 30)
         l.add(to: .main, forMode: .common)
         link = l
         // 1.2 秒后收尾（没走完的也记下，方便看卡在哪段）

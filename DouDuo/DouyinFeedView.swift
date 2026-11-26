@@ -4238,7 +4238,10 @@ struct DYUpstreamVideoPage: View {
                 DYAdaptiveActionRail { edge in
                     HStack(alignment: .bottom, spacing: 12) {
                         if edge == .leading { actionRail(fg, edge: edge) }
-                        if !chromeMode.hidesInfo || (isCurrent && peek.on) { info(fg).transition(.opacity) }
+                        HStack(alignment: .top, spacing: 8) {
+                            if !chromeMode.hidesInfo || (isCurrent && peek.on) { info(fg).transition(.opacity) }
+                            auxControls(fg)
+                        }
                         Spacer(minLength: 0)
                         if edge == .trailing { actionRail(fg, edge: edge) }
                     }
@@ -4253,7 +4256,10 @@ struct DYUpstreamVideoPage: View {
             } else {
                 // 默认：PR #12 之前的布局，左下信息 + 右侧按钮栏
                 HStack(alignment: .bottom, spacing: 12) {
-                    info(fg)
+                    HStack(alignment: .top, spacing: 8) {
+                        info(fg)
+                        auxControls(fg)
+                    }
                     Spacer(minLength: 0)
                     actions(fg)
                         .offset(x: DYDuoMetrics.actionRailHorizontalOffset(
@@ -4398,6 +4404,56 @@ struct DYUpstreamVideoPage: View {
         .themeShadow(.mediaLabel)
     }
 
+    /// 左下文案右侧的小控制区：倍速 + 显隐功能栏（静音时再加喇叭）。
+    /// 11-26 老板要求：原来那颗眼睛放在视频中间挡画面，挪到这里，和文案同一行。
+    private func auxControls(_ fg: Color) -> some View {
+        HStack(spacing: 8) {
+            if muted {
+                Button {
+                    muted = false
+                    onToast?("声音已打开")
+                } label: {
+                    Image(systemName: "speaker.slash.fill")
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(fg)
+                        .frame(width: 34, height: 34)
+                        .contentShape(Circle())
+                        .ddMediaGlassCircle()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("打开声音")
+                .accessibilityIdentifier("douyin.unmute")
+            }
+            Button { cycleRate() } label: {
+                Text(String(format: "%g×", playbackRate))
+                    .font(.caption.weight(.semibold)).monospacedDigit()
+                    .foregroundStyle(fg)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Circle())
+                    .ddMediaGlassCircle()
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("切换倍速，当前 \(playbackRate) 倍")
+            .accessibilityIdentifier("douyin.rail.speed")
+            Button {
+                railVisible.toggle()
+                onToast?(railVisible ? "右侧按钮已显示" : "右侧按钮已隐藏")
+            } label: {
+                Image(systemName: railVisible ? "eye.slash" : "eye")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(fg)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Circle())
+                    .ddMediaGlassCircle()
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(railVisible ? "隐藏右侧功能按钮" : "显示右侧功能按钮")
+            .accessibilityIdentifier(railVisible ? "douyin.rail.hide" : "douyin.rail.restore")
+        }
+        .fixedSize()
+        .padding(.bottom, 2)
+    }
+
     /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 评论 / 收藏 / 搜索，数字在图标下），下方单独一颗「更多」圆按钮
     @Environment(\.dyRootRailTab) private var rootRailTab
 
@@ -4459,86 +4515,17 @@ struct DYUpstreamVideoPage: View {
                             onToast?(autoFit ? "铺满：开" : "完整画面")
                         }
                     }
-                    // 快捷倍速：点一下切下一档，循环；选中的值同步写回自定义，菜单显示一致。
-                    Button { cycleRate() } label: {
-                        VStack(spacing: 2) {
-                            Image(systemName: "speedometer")
-                                .font(.system(size: theme.media.actionGlyphSize, weight: .regular, design: .rounded))
-                                .foregroundStyle(fg)
-                                .frame(width: 34, height: 34)
-                            Text(String(format: "%g×", playbackRate))
-                                .font(.caption2.weight(.medium)).monospacedDigit()
-                                .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
-                                .lineLimit(1).minimumScaleFactor(0.7)
-                        }
-                        .frame(width: railWidth, height: 50, alignment: .top)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("切换倍速，当前 \(playbackRate) 倍")
-                    .accessibilityIdentifier("douyin.rail.speed")
-                    // 显隐同一颗眼睛：显示时点它藏起来，藏起来后原位的小眼睛点它放回来。
-                    // 不再塞进「更多」菜单，省掉每次两层点击。
-                    Button { railVisible = false; onToast?("右侧按钮已隐藏") } label: {
-                        Image(systemName: "eye")
-                            .font(.system(size: theme.media.actionGlyphSize, weight: .regular, design: .rounded))
-                            .foregroundStyle(fg)
-                            .frame(width: 34, height: 36)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("隐藏右侧功能按钮")
-                    .accessibilityIdentifier("douyin.rail.hide")
+                    // 倍速 / 显隐按钮已挪到左下文案区右侧（不再挡视频中间）
                 }
                 .padding(.vertical, 8)
                 .frame(width: railWidth)
                 .ddMediaGlassCapsule()
                 .frame(width: actionColumnWidth)
-                // 「更多」跟着功能栏一起藏：右侧只留「打开声音」和「显示功能按钮」两颗
+                // 「更多」跟着功能栏一起藏；喇叭 / 倍速 / 显隐都在左下文案区右侧
                 moreMenu(fg)
             } else {
-                // 功能栏已隐藏：只保留两颗——静音时出现的「打开声音」和用来还原的小眼睛
-                VStack(spacing: theme.media.actionGroupSpacing) {
-                    if muted {
-                        Button {
-                            muted = false
-                            onToast?("声音已打开")
-                        } label: {
-                            Image(systemName: "speaker.slash.fill")
-                                .font(.system(size: theme.media.moreGlyphSize, weight: .regular, design: .rounded))
-                                .foregroundStyle(fg)
-                                .frame(width: 50, height: 50)
-                                .contentShape(Circle())
-                                .ddMediaGlassCircle()
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("打开声音")
-                        .accessibilityIdentifier("douyin.unmute")
-                    }
-                    // 功能栏藏起来后，倍速仍然能一键循环
-                    Button { cycleRate() } label: {
-                        Text(String(format: "%g×", playbackRate))
-                            .font(.caption.weight(.semibold)).monospacedDigit()
-                            .foregroundStyle(fg)
-                            .frame(width: 50, height: 50)
-                            .contentShape(Circle())
-                            .ddMediaGlassCircle()
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("douyin.rail.speed")
-                    // 原位留一颗小眼睛，点一下切回（按钮在隐藏区域之外，不会把自己藏掉）
-                    Button { railVisible = true; onToast?("右侧按钮已显示") } label: {
-                        Image(systemName: "eye.slash")
-                            .font(.system(size: theme.media.moreGlyphSize, weight: .regular, design: .rounded))
-                            .foregroundStyle(fg)
-                            .frame(width: 50, height: 50)
-                            .contentShape(Circle())
-                            .ddMediaGlassCircle()
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("douyin.rail.restore")
-                }
-                .frame(width: actionColumnWidth)
+                // 辅助按钮都在底部信息区右侧；这里只留占位，右侧完全不挡画面
+                Color.clear.frame(width: actionColumnWidth, height: 0).allowsHitTesting(false)
             }
         }
         .themeShadow(.mediaLabel)

@@ -2474,7 +2474,9 @@ enum DYResumePolicy {
         label = "\(what) mode=\(mode)"; player = p
         start = CACurrentMediaTime(); last = 0; maxGap = 0; drops = 0; stallAt = []; lastT = -1; frozen = 0; frozenEarly = 0; maxJump = 0
         let l = CADisplayLink(target: target, selector: #selector(Tick.tick(_:)))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        // 诊断探针只跑 1 秒，120fps 是白给主线程加压（尤其 ProMotion 机型）；
+        // 30fps 足够量出掉帧量级，截屏/切后台时少一次高频唤醒。
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 30, preferred: 30)
         l.add(to: .main, forMode: .common)
         link = l
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { finish() }
