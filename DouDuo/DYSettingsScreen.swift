@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 /// 完整设置页：「更多 → 设置」点进来。所有全局偏好集中在这里，菜单里不再层层嵌套。
 /// 当前视频相关的操作（转发 / 不感兴趣 / 下载 / 倍速 / 静音 / 听书 / 自动连播 / 发弹幕）和铺满宽度都在表层菜单，这里不重复。
@@ -19,6 +20,7 @@ struct DYSettingsScreen: View {
     @AppStorage(DDChromeMode.key) private var chromeMode = DDChromeMode.classic.rawValue
     // 播放
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
+    @AppStorage(DYPlaybackQuality.storageKey) private var playQuality = DYPlaybackQuality.p720.rawValue
     @AppStorage(DYAutoPiP.storageKey) private var autoPiP = false
     // 内容
     // 老板 11-24：横竖屏筛选默认关（按抖音推荐原样播），放进「高级设置」
@@ -81,6 +83,18 @@ struct DYSettingsScreen: View {
                             ForEach(DYVideoAmbient.levels, id: \.self) { Text(DYVideoAmbient.title($0)).tag($0) }
                         }
                         .accessibilityIdentifier("settings.ambient")
+                    }
+                    row(.playQuality) {
+                        Picker("播放清晰度", selection: $playQuality) {
+                            ForEach(DYPlaybackQuality.allCases) { Text($0.title).tag($0.rawValue) }
+                        }
+                        .onChange(of: playQuality) { _, v in
+                            // 同时写 localStorage（页面重载后仍生效）和 window 变量（本次推荐立刻生效）
+                            DouyinBridge.primary?.web.evaluateJavaScript(
+                                "try{localStorage.setItem('\(DYPlaybackQuality.webStorageKey)','\(v)')}catch(e){};window.__ddMaxRes=\(v);",
+                                completionHandler: nil)
+                        }
+                        .accessibilityIdentifier("settings.play.quality")
                     }
                     row(.launchMuted) {
                         Toggle("打开时默认静音", isOn: $launchMuted).accessibilityIdentifier("settings.launch.muted")
@@ -334,6 +348,7 @@ struct DYSettingsScreen: View {
 /// 每个设置项的 ⓘ 说明：开 / 关分别会怎样（老板 11-24）
 enum DYSettingInfo: String, Identifiable {
     case chrome, ambient, launchMuted, danmaku, danmakuDensity, keywords, hideSeen, feedLive, feedAds, feedProduct
+    case playQuality
     case wifiSaver, cellSaver, cacheCount, dmNotify, dmDetail
     case landscapeOnly, portraitMix, dedupe, autoPiP, replyKeyboard, webComment, streaming
     var id: String { rawValue }
@@ -342,6 +357,7 @@ enum DYSettingInfo: String, Identifiable {
         switch self {
         case .chrome: "界面模式"
         case .ambient: "环境光"
+        case .playQuality: "播放清晰度"
         case .launchMuted: "打开时默认静音"
         case .danmaku: "显示弹幕"
         case .danmakuDensity: "弹幕密度"
@@ -370,6 +386,7 @@ enum DYSettingInfo: String, Identifiable {
         switch self {
         case .chrome: [("说明", "四种播放页布局：默认、简洁、极简、经典。只改按钮和信息怎么摆，不影响推荐和播放。")]
         case .ambient: [("说明", "视频没铺满屏幕时，四周的空白跟着画面颜色变化。分关 / 亮 / 中 / 暗 / 很暗；选「关」就是纯黑边。")]
+        case .playQuality: [("说明", "拉视频时只挑这个范围内的清晰度档，和抖音客户端一样不给原画。\n\n720p：解码和内存约为 1080p 的 40%，肉眼几乎看不出差别，截屏、切后台时的系统卡顿明显减轻。\n540p：最省，发热最低。\n1080p / 原画：更清晰，但 2K/4K 视频会让解码器和系统合成压力变大。\n\n改完立刻对新拉的视频生效；已经缓存在本机的旧清晰度文件播完自然消失。")]
         case .launchMuted: [("开", "每次打开 DouDuo 都先静音，并提示「已静音播放」；不会打断你正在放的音乐。"), ("关", "打开就带声音播放。")]
         case .danmaku: [("开", "视频上方 1/3 区域显示弹幕。"), ("关", "不显示弹幕，发弹幕仍在播放页菜单里。")]
         case .danmakuDensity: [("说明", "稀疏：最多 2 行、每秒 1 条；标准：4 行、每秒 2 条；密集：6 行、每秒 4 条。")]

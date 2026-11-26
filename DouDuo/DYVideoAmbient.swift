@@ -40,8 +40,13 @@ final class DYAmbientFrameView: UIView {
     var fillWidth = true
     private let imageView = UIImageView()
     private let dimView = UIView()
+    /// ⚠️ 这个 VideoOutput 会让解码器额外产出一路帧给 App 进程（不是零成本）：
+    /// 32BGRA 时 1080p 一帧 8.3MB，输出池常驻 3~5 帧就是 25~40MB，每秒还拷几次 → 内存和带宽都吃。
+    /// 改成 NV12（420 双平面，3.1MB/帧，CIImage 直接吃，不用再做 BGRA 转换），并让 IOSurface 零拷贝上 GPU。
     private let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
-        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+    ])
     private weak var attachedItem: AVPlayerItem?
     private var link: CADisplayLink?
     /// 切后台立刻停取帧：原来靠 active/window 变化间接停止，系统做快照时还可能跑几帧图像处理。
@@ -107,9 +112,10 @@ final class DYAmbientFrameView: UIView {
         if active && window != nil && !backgrounded && !hot && !DDPerfExperiment.off("AMBIENT") {
             guard link == nil else { return }
             let l = CADisplayLink(target: DYAmbientTick(self), selector: #selector(DYAmbientTick.tick))
-            // 环境光不用 60 帧，12 帧左右看着就是连续的
-            // 实测这一项占主线程约 1 成（每帧缩图 + 高斯模糊 + 生成图片都在主线程）；背景光变化慢，6 帧足够
-            l.preferredFrameRateRange = CAFrameRateRange(minimum: 4, maximum: 8, preferred: 6)
+            // 环境光是「氛围」，不是画面：背景色的变化人眼本来就跟不上。
+            // 之前 6 帧/秒，每秒要从解码器拷 6 份全尺寸帧；改成 ~2 帧/秒，开销降到三分之一，
+            // 观感没有区别（抖音的环境光也是秒级跟随，不是逐帧）。
+            l.preferredFrameRateRange = CAFrameRateRange(minimum: 1, maximum: 3, preferred: 2)
             l.add(to: .main, forMode: .common)
             link = l
         } else {

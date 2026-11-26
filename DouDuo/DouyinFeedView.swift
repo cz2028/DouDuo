@@ -302,6 +302,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         cfg.allowsInlineMediaPlayback = true
         cfg.allowsPictureInPictureMediaPlayback = false
         cfg.userContentController.addUserScript(WKUserScript(source: Self.noMediaJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // 播放清晰度上限：拉推荐时 JS 按这个值过滤码率档（默认 720p，见 DYPlaybackQuality）
+        cfg.userContentController.addUserScript(WKUserScript(source: DYPlaybackQuality.injectionJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         DYTrustLogin.install(in: cfg)   // 签名页上弹「是否保存登录信息？」也默认点「保存」
         DYLogoutBlock.install(in: cfg)  // 后台签名页无人操作，不许它自己调抖音登出
         DYKeyStateProbe.install(in: cfg, tag: "signer")
@@ -1093,14 +1095,26 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     // 普通视频的 H.265 档末位是 _1（hvc1，能解）。播放地址只从能解的档里挑。
     const decodable = r => !/_2$/.test(r.gear_name || '');
     const withAudio = r => (!r.format || r.format === 'mp4') && decodable(r);
+    // 清晰度上限（抖音客户端同样不给原画）：按设置过滤掉超过上限的码率档。
+    // 1080p/2K 的 H.265 解码缓冲更大，截屏/切后台时系统合成更贵——这是系统级卡顿的主因。
+    const capRes = () => { const n = window.__ddMaxRes; return typeof n === 'number' && isFinite(n) ? n : 720; };
     const bestRate = v => {
-      const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length)
+      const all = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length)
         .filter(r => !/adapt_lowest|lower/i.test(r.gear_name || ''));
+      // 容差 40：720 档偶尔标成 720/768；一档都不满足时退回全部，宁可清晰也别掉到 360p
+      const cap = capRes();
+      let rs = all;
+      if (cap > 0) {
+        const within = all.filter(r => { const e = resOf(r); return e > 0 && e <= cap + 40; });
+        if (within.length) rs = within;
+      }
       rs.sort((a, b) => ((b.bit_rate || 0) * (b.is_h265 ? 1.4 : 1)) - ((a.bit_rate || 0) * (a.is_h265 ? 1.4 : 1)));
       return rs[0] || null;
     };
     const fastRate = v => {
-      const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length && resOf(r) >= 540);
+      const cap = capRes();
+      const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length
+        && resOf(r) >= 540 && (cap <= 0 || resOf(r) <= cap + 40));
       rs.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
       return rs[0] || null;
     };
