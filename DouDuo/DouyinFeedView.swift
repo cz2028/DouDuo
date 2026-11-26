@@ -1098,6 +1098,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     // 清晰度上限（抖音客户端同样不给原画）：按设置过滤掉超过上限的码率档。
     // 1080p/2K 的 H.265 解码缓冲更大，截屏/切后台时系统合成更贵——这是系统级卡顿的主因。
     const capRes = () => { const n = window.__ddMaxRes; return typeof n === 'number' && isFinite(n) ? n : 720; };
+    // 单档是否在上限内（分辨率未知时放行，宁可多一档也别因为识别不出把整条视频弄成不可播）
+    const withinCap = r => { const cap = capRes(); if (cap <= 0) return true; const e = resOf(r); return e <= 0 || e <= cap + 40; };
     const bestRate = v => {
       const all = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length)
         .filter(r => !/adapt_lowest|lower/i.test(r.gear_name || ''));
@@ -1121,7 +1123,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     // 省流量档：≥540p、非弱网档里码率最低的（H.265 优先，同画质约省一半）
     const saverRate = v => {
       const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length
-        && resOf(r) >= 540 && !/adapt_lowest|lower/i.test(r.gear_name || ''));
+        && resOf(r) >= 540 && withinCap(r) && !/adapt_lowest|lower/i.test(r.gear_name || ''));
       rs.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
       return rs[0] || null;
     };
@@ -1129,7 +1131,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const mapA = a => {
       const v = a.video || {}, urls = (v.play_addr && v.play_addr.url_list) || [];
       const st = a.statistics || {};
-      const allURLs = [...urls, ...((v.bit_rate || []).filter(withAudio).flatMap(r => (r.play_addr && r.play_addr.url_list) || []))];
+      const allURLs = [...urls, ...((v.bit_rate || []).filter(withAudio).filter(withinCap).flatMap(r => (r.play_addr && r.play_addr.url_list) || []))];
       const def = pickPlay(urls), br = bestRate(v), best = br ? pickPlay(br.play_addr.url_list) : null;
       // 最优档没有重定向地址时，退而求其次找任意一档的重定向地址（直连 CDN 现在 403，不能用来起播）
       const anyRedirect = pickRedirect(br ? br.play_addr.url_list : urls) || pickRedirect(allURLs);
