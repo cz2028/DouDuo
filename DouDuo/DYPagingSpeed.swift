@@ -195,9 +195,6 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     private var writing = false
     private var jumpFixes = 0
     /// 每条被拦次数（同一条拦太多就放行，避免永久卡住）
-    private var blockedCount: [String: Int] = [:]
-    /// 这条第一次被拦的时刻：网络很差时不能让用户一直被弹回，等够了就直接放行
-    private var blockedAt: [String: CFTimeInterval] = [:]
     private var target: CGPoint?
     private var start = CGPoint.zero
     private var startTime: CFTimeInterval = 0
@@ -278,32 +275,8 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
                                step, dragged, h, v, velocity.y, recent.map { String(format: "%.2f", $0) } ?? "-"))
         targetContentOffset.pointee.y = CGFloat(index) * h - top
         guard items.indices.contains(index) else { return }
-        // 老板要求：下一个视频还没加载好就别让它翻过去（跟抖音原版一样）
-        // 只拦「往前翻」；往回翻是看过的，直接放行
-        let curIndex = baseIndex ?? index
-        if index > curIndex, !DYReadiness.isReady(items[index]) {
-            let id = items[index]
-            let n = (blockedCount[id] ?? 0) + 1
-            blockedCount[id] = n
-            let now = CACurrentMediaTime()
-            let first = blockedAt[id] ?? now
-            blockedAt[id] = first
-            let waited = now - first
-            // 以前最多弹回 3 次（要滑 4~5 次才过得去），老板实测就是「滑不动」。
-            // 现在最多弹回 1 次，且首次拦截过 1.2 秒后不管好没好都放行：
-            // 人员操作优先，真没加载到由页面中央的「加载中 / 缓冲中」提示接管。
-            if n <= 1, waited < 1.2 {
-                let curY = CGFloat(curIndex) * scrollView.bounds.height - scrollView.adjustedContentInset.top
-                targetID = items[curIndex]
-                target = CGPoint(x: scrollView.contentOffset.x, y: curY)
-                targetContentOffset.pointee = scrollView.contentOffset
-                DYLiveModel.log("DDBLOCK next=\(id.suffix(4)) 未就绪，弹回 1 次（已等 \(String(format: "%.1f", waited))s）")
-                return
-            }
-            blockedCount[id] = nil
-            blockedAt[id] = nil
-            DYLiveModel.log("DDFORCE next=\(id.suffix(4)) 未就绪但放行 n=\(n) waited=\(String(format: "%.1f", waited))s")
-        }
+        // 一次也不弹回：下一条没加载好就直接翻过去，由页面中央的
+        // 「加载中… / 缓冲中…」提示接管，不再让手势被系统吃掉（老板 11-26 定）。
         targetID = items[index]
         target = targetContentOffset.pointee
         // Prevent system deceleration; CADisplayLink then moves to the system-selected page.

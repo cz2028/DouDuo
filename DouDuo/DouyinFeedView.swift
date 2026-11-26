@@ -4141,7 +4141,7 @@ struct DYUpstreamVideoPage: View {
     /// 右侧功能栏（赞/评论/收藏/搜索/铺满）是否显示。默认开；关掉后画面更干净，常驻小眼睛按钮可切回。
     @AppStorage("douyin_action_rail_visible_v1") private var railVisible = true
     @State private var showCustomRate = false
-    @State private var customRateText = ""
+    @AppStorage(DYPlaybackRates.customKey) private var customRateText = ""
     @State private var heart = false
     @State private var shareCoversOfflineVideo = false
     @State private var saving = false
@@ -4284,7 +4284,11 @@ struct DYUpstreamVideoPage: View {
             if !c { dm.showInput = false }
             if c, onBack == nil { DYBoostRouter.shared.adopt(boost) }
         }
-        .onAppear { if isCurrent, onBack == nil { DYBoostRouter.shared.adopt(boost) } }
+        .onAppear {
+            // 自定义为空 = 1.0；菜单显示值就是实际播放倍速
+            playbackRate = DYPlaybackRates.menuValue(customRateText)
+            if isCurrent, onBack == nil { DYBoostRouter.shared.adopt(boost) }
+        }
         // 弹幕：轮到这条时才拉（一次拉整条视频的）——共用 DYDanmakuModel
         .task(id: isCurrent) { await dm.load(item, isCurrent: isCurrent, bridge: bridge) }
         .alert("自定义倍速", isPresented: $showCustomRate) {
@@ -4292,10 +4296,11 @@ struct DYUpstreamVideoPage: View {
                 .keyboardType(.decimalPad)
             Button("取消", role: .cancel) {}
             Button("确定") {
-                if let r = DYPlaybackRates.parse(customRateText) {
-                    playbackRate = r
-                    onToast?(rateTitle(r))
-                }
+                // 空 / 无效输入一律回 1.0，并写回显示值
+                let r = DYPlaybackRates.parse(customRateText) ?? 1.0
+                customRateText = String(format: "%g", r)
+                playbackRate = r
+                onToast?(rateTitle(r))
             }
         } message: {
             Text("输入 0.1 到 4.0 之间的倍速，例如 0.3、1.8、3.0。")
@@ -4454,6 +4459,24 @@ struct DYUpstreamVideoPage: View {
                             onToast?(autoFit ? "铺满：开" : "完整画面")
                         }
                     }
+                    // 快捷倍速：点一下切下一档，循环；选中的值同步写回自定义，菜单显示一致。
+                    Button { cycleRate() } label: {
+                        VStack(spacing: 2) {
+                            Image(systemName: "speedometer")
+                                .font(.system(size: theme.media.actionGlyphSize, weight: .regular, design: .rounded))
+                                .foregroundStyle(fg)
+                                .frame(width: 34, height: 34)
+                            Text(String(format: "%g×", playbackRate))
+                                .font(.caption2.weight(.medium)).monospacedDigit()
+                                .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                        }
+                        .frame(width: railWidth, height: 50, alignment: .top)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("切换倍速，当前 \(playbackRate) 倍")
+                    .accessibilityIdentifier("douyin.rail.speed")
                     // 显隐同一颗眼睛：显示时点它藏起来，藏起来后原位的小眼睛点它放回来。
                     // 不再塞进「更多」菜单，省掉每次两层点击。
                     Button { railVisible = false; onToast?("右侧按钮已隐藏") } label: {
@@ -4492,6 +4515,17 @@ struct DYUpstreamVideoPage: View {
                         .accessibilityLabel("打开声音")
                         .accessibilityIdentifier("douyin.unmute")
                     }
+                    // 功能栏藏起来后，倍速仍然能一键循环
+                    Button { cycleRate() } label: {
+                        Text(String(format: "%g×", playbackRate))
+                            .font(.caption.weight(.semibold)).monospacedDigit()
+                            .foregroundStyle(fg)
+                            .frame(width: 50, height: 50)
+                            .contentShape(Circle())
+                            .ddMediaGlassCircle()
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("douyin.rail.speed")
                     // 原位留一颗小眼睛，点一下切回（按钮在隐藏区域之外，不会把自己藏掉）
                     Button { railVisible = true; onToast?("右侧按钮已显示") } label: {
                         Image(systemName: "eye.slash")
@@ -4541,6 +4575,15 @@ struct DYUpstreamVideoPage: View {
         .accessibilityIdentifier(id)
     }
 
+    /// 播放页快捷倍速：0.5 → 1 → 1.25 → 1.5 → 2 → 3 →（自定义值）→ 回到头。
+    /// 选中的值同时写回自定义，菜单里显示的和实际播放的永远一致。
+    private func cycleRate() {
+        let next = DYPlaybackRates.next(playbackRate, custom: customRateText)
+        playbackRate = next
+        customRateText = String(format: "%g", next)
+        onToast?(rateTitle(next))
+    }
+
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
 
     /// 「更多」：转发 / 不感兴趣 / 下载 → 铺满宽度 / 倍速 / 静音 / 听书 / 自动连播 → 发弹幕 → 设置。
@@ -4576,22 +4619,13 @@ struct DYUpstreamVideoPage: View {
                     }
                     .accessibilityIdentifier(DYVideoFit.moreIdentifier)
                 }
-                Menu {
-                    Picker("倍速", selection: Binding(
-                        get: { playbackRate },
-                        set: { r in playbackRate = r; onToast?(rateTitle(r)) })) {
-                        ForEach(DYPlaybackRates.presets, id: \.self) { r in Text(DYPlaybackRates.title(r)).tag(r) }
-                        if DYPlaybackRates.isCustom(playbackRate) {
-                            Text(String(format: "%.2g", playbackRate)).tag(playbackRate)
-                        }
-                    }
-                    Button("自定义倍速…", systemImage: "slider.horizontal.3") {
-                        customRateText = String(format: "%g", playbackRate)
-                        showCustomRate = true
-                    }
-                    .accessibilityIdentifier("douyin.quick.rate.custom")
+                // 不再列预设档：直接显示自定义填的值（没填就是 1.0），点开改；
+                // 挨个切档用画面上的快捷倍速按钮。
+                Button {
+                    customRateText = String(format: "%g", DYPlaybackRates.menuValue(customRateText))
+                    showCustomRate = true
                 } label: {
-                    Label("倍速 · \(DYPlaybackRates.title(playbackRate))×", systemImage: "speedometer")
+                    Label("倍速 · \(DYPlaybackRates.menuTitle(customRateText))×", systemImage: "speedometer")
                 }
                 .accessibilityIdentifier("douyin.quick.speed")
                 Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }

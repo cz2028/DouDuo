@@ -2,6 +2,7 @@ import SwiftUI
 
 /// 播放倍速档位与自定义解析（播放页菜单 / 视频设置面板共用）。
 enum DYPlaybackRates {
+    static let customKey = "douyin_custom_rate_v1"
     static let presets: [Double] = [0.1, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
     static let minRate = 0.1
     static let maxRate = 4.0
@@ -12,6 +13,24 @@ enum DYPlaybackRates {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "倍", with: "")
         guard let v = Double(t), v.isFinite else { return nil }
         return min(maxRate, max(minRate, v))
+    }
+
+    /// 菜单里只显示这一项：自定义填的值；没填或无效就是 1.0。
+    static func menuValue(_ custom: String) -> Double { parse(custom) ?? 1.0 }
+    static func menuTitle(_ custom: String) -> String { title(menuValue(custom)) }
+
+    /// 播放页快捷按钮的循环顺序：常用档 + 用户自定义档（自定义值也参与循环）。
+    static func cycle(_ custom: String) -> [Double] {
+        var arr = [0.5, 1.0, 1.25, 1.5, 2.0, 3.0]
+        if let r = parse(custom), !arr.contains(where: { abs($0 - r) < 0.001 }) { arr.append(r) }
+        return arr.sorted()
+    }
+
+    /// 循环到下一档；当前值不在序列里时从第一档开始。
+    static func next(_ current: Double, custom: String) -> Double {
+        let arr = cycle(custom)
+        guard let i = arr.firstIndex(where: { abs($0 - current) < 0.001 }) else { return arr.first ?? 1.0 }
+        return arr[(i + 1) % arr.count]
     }
 }
 
@@ -30,7 +49,7 @@ struct DYVideoOptionsPanel: View {
     @State private var listAtTop = true
     @State private var headerHeight: CGFloat = 44
     @State private var showCustomRate = false
-    @State private var customRateText = ""
+    @AppStorage(DYPlaybackRates.customKey) private var customRateText = ""
     var onDislike: (() -> Void)?
     var onSendDanmaku: (() -> Void)?
     var onWatchLater: (() -> Void)?
@@ -79,21 +98,14 @@ struct DYVideoOptionsPanel: View {
                                 .font(.subheadline.weight(.semibold))
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 6) {
-                                    ForEach(DYPlaybackRates.presets, id: \.self) { rate in
-                                        let selected = abs(playbackRate - rate) < 0.01
-                                        rateChip(DYPlaybackRates.title(rate), selected: selected) {
-                                            playbackRate = rate
-                                        }
-                                        .accessibilityLabel(rate == 1 ? "正常速度" : "\(rate) 倍速")
-                                        .accessibilityAddTraits(selected ? .isSelected : [])
-                                        .accessibilityIdentifier("douyin.options.rate.\(rate)")
-                                    }
-                                    let isCustom = DYPlaybackRates.isCustom(playbackRate)
-                                    rateChip(isCustom ? String(format: "%.2g", playbackRate) : "自选", selected: isCustom) {
-                                        customRateText = String(format: "%g", playbackRate)
+                                    // 不列预设档：这一格显示的就是自定义填的值（空 = 1.0），
+                                    // 想依次切档用播放页的快捷倍速按钮。
+                                    let shown = DYPlaybackRates.menuValue(customRateText)
+                                    rateChip(DYPlaybackRates.title(shown), selected: true) {
+                                        customRateText = String(format: "%g", shown)
                                         showCustomRate = true
                                     }
-                                    .accessibilityLabel("自定义倍速")
+                                    .accessibilityLabel("自定义倍速 \(shown)")
                                     .accessibilityIdentifier("douyin.options.rate.custom")
                                 }
                             }
@@ -142,12 +154,16 @@ struct DYVideoOptionsPanel: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.options.panel")
+        .onAppear { playbackRate = DYPlaybackRates.menuValue(customRateText) }
         .alert("自定义倍速", isPresented: $showCustomRate) {
             TextField("0.1 ~ 4.0", text: $customRateText)
                 .keyboardType(.decimalPad)
             Button("取消", role: .cancel) {}
             Button("确定") {
-                if let r = DYPlaybackRates.parse(customRateText) { playbackRate = r }
+                // 空 / 无效输入一律回 1.0，并写回显示值，别留下脏字符串
+                let r = DYPlaybackRates.parse(customRateText) ?? 1.0
+                customRateText = String(format: "%g", r)
+                playbackRate = r
             }
         } message: {
             Text("输入 0.1 到 4.0 之间的倍速，例如 0.3、1.8、3.0。")
