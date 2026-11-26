@@ -186,10 +186,9 @@ final class DYLiveModel: ObservableObject {
     }
 
     /// 日志已停用（老板 11-26 定：不要写日志文件）。
-    /// 保留签名 + @autoclosure：所有现有调用点不用改、编译照过；
-    /// 空实现意味着闭包不会执行，连字符串插值的构造开销一起归零。
+    /// 保留原签名，所有调用点不用改；空实现不再写盘。
     /// 以后要恢复诊断日志，把下面的实现替换回来即可。
-    nonisolated static func log(_ s: @autoclosure () -> String) {}
+    nonisolated static func log(_ s: String) {}
 
     init() {
         vlc.onProgress = { [weak self] time in
