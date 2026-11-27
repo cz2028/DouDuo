@@ -81,13 +81,13 @@ struct DYSettingsScreen: View {
                             Text("\(Int(commentOpacity * 100))%")
                                 .foregroundStyle(.secondary).monospacedDigit()
                         }
-                        Slider(value: $commentOpacity, in: 0.3...1.0, step: 0.05)
+                        Slider(value: $commentOpacity, in: 0...1.0, step: 0.05)
                     }
                     .accessibilityIdentifier("settings.comment.opacity")
                 } header: {
                     Text("界面")
                 } footer: {
-                    Text("评论背景调低可以透出下方视频，文字始终清晰。")
+                    Text("评论背景可调到 0% 完全透明，透出下方视频；文字始终保持清晰。")
                 }
 
                 Section {

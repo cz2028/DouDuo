@@ -4408,7 +4408,7 @@ struct DYUpstreamVideoPage: View {
                         .foregroundStyle(fg)
                         .frame(width: 34, height: 34)
                         .contentShape(Circle())
-                        .ddMediaGlassCircle()
+                        .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("打开声音")
@@ -4420,7 +4420,7 @@ struct DYUpstreamVideoPage: View {
                     .foregroundStyle(fg)
                     .frame(width: 34, height: 34)
                     .contentShape(Circle())
-                    .ddMediaGlassCircle()
+                    .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
             }
             .buttonStyle(.plain)
             // 单击循环下一档；长按弹出列表里所有倍速直接选
@@ -4443,7 +4443,7 @@ struct DYUpstreamVideoPage: View {
                     .foregroundStyle(fg)
                     .frame(width: 34, height: 34)
                     .contentShape(Circle())
-                    .ddMediaGlassCircle()
+                    .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(railVisible ? "隐藏右侧功能按钮" : "显示右侧功能按钮")
@@ -5534,7 +5534,7 @@ struct DYCommentPanel: View {
                 inputBar
             }
             .fixedSize(horizontal: false, vertical: true)
-            .background(fillsPane ? Color.ddBackground : .clear)
+            .background(fillsPane ? Color.ddBackground.opacity(commentOpacity) : .clear)
         }
     }
 
