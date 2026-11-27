@@ -2724,12 +2724,12 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     }
                     Divider().padding(.vertical, 4)
                     minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { openSearch() }
-                    // 老板 2026-11-19：「信息」入口加回来，点它直接进信息页；「我的」照旧进我的页（同一页的两个分栏）
+                    // 「信息」进信息页；「我的」跟右上角头像一致，直接开独立的「我的」页
                     minimalMenuRow("信息", "bubble.left.and.bubble.right", badge: noticeUnread > 0, id: "douyin.module.messages") {
                         messagesStartOnMine = false; showMessages = true
                     }
                     minimalMenuRow("我的", "person.crop.circle", id: "douyin.module.mine") {
-                        messagesStartOnMine = true; showMessages = true
+                        showMine = true
                     }
                 }
                 .padding(.vertical, 8)
