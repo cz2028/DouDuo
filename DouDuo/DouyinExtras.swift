@@ -1526,7 +1526,8 @@ struct DYListPlayer: View {
             insets: insets, resume: playback.resume[item.id],
             liked: playback.liked.contains(item.id), collected: playback.collected.contains(item.id),
             onLike: { toggleLike(item.id, force: nil) }, onCollect: { toggleCollect(item.id) },
-            onDoubleTap: { toggleLike(item.id, force: true) },
+            // 双击改为打开评论（11-27 老板要求）；点赞仍走右侧按钮
+            onDoubleTap: { if requireConnection() { showComments = true } },
             onComments: { if requireConnection() { showComments.toggle() } },
             onSearch: { if requireConnection() {
                 DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() }
@@ -2885,7 +2886,8 @@ struct DYFollowFeed: View {
                                         resume: resume[item.id], liked: liked.contains(item.id) || item.userDigged == 1,
                                         collected: collected.contains(item.id) || item.isCollect == 1,
                                         onLike: { like(item.id, force: nil) }, onCollect: { collect(item.id) },
-                                        onDoubleTap: { like(item.id, force: true) }, onComments: { onComments(item) },
+                                        // 双击改为打开评论（11-27 老板要求）；点赞仍走右侧按钮
+                                        onDoubleTap: { onComments(item) }, onComments: { onComments(item) },
                                         onAuthor: { onAuthor(item) }, onSavePosition: { resume[item.id] = $0 },
                                         preloader: preloader, bridge: bridge, onToast: onToast,
                                         onNavigateLeft: onChannelDrag == nil ? onShowRecommendations : nil,

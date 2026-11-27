@@ -2834,7 +2834,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                            collected: feed.collected.contains(item.id),
                            onLike: { toggleLike(item.id, force: nil) },
                            onCollect: { toggleCollect(item.id) },
-                           onDoubleTap: { toggleLike(item.id, force: true) },
+                           // 双击改为打开评论（11-27 老板要求）；点赞仍走右侧按钮
+                           onDoubleTap: { withAnimation(.snappy) { showComments = true } },
                            onComments: { withAnimation(.snappy) { showComments.toggle() } },
                            onSearch: { openSearch() },
                            onAuthor: { authorTarget = item.author },
@@ -4052,7 +4053,8 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                            collected: feed.collected.contains(item.id),
                            onLike: { toggleLike(item.id, force: nil) },
                            onCollect: { toggleCollect(item.id) },
-                           onDoubleTap: { toggleLike(item.id, force: true) },
+                           // 双击改为打开评论（11-27 老板要求）；点赞仍走右侧按钮
+                           onDoubleTap: { authorTarget = nil; showComments = true },
                            onComments: { authorTarget = nil; showComments.toggle() },
                            onAuthor: { showComments = false; authorTarget = item.author },
                            onSavePosition: { resume[item.id] = $0; saveSession() },
@@ -4142,6 +4144,8 @@ struct DYUpstreamVideoPage: View {
     @AppStorage("douyin_action_rail_visible_v1") private var railVisible = true
     @State private var showCustomRate = false
     @AppStorage(DYPlaybackRates.customKey) private var customRateText = "1"
+    /// 弹窗输入框临时值：不直接绑 @AppStorage，避免点确定时最后输入没同步回去被抹掉
+    @State private var rateInputText = "1"
     @State private var heart = false
     @State private var shareCoversOfflineVideo = false
     @State private var saving = false
@@ -4299,17 +4303,20 @@ struct DYUpstreamVideoPage: View {
         // 弹幕：轮到这条时才拉（一次拉整条视频的）——共用 DYDanmakuModel
         .task(id: isCurrent) { await dm.load(item, isCurrent: isCurrent, bridge: bridge) }
         .alert("自定义倍速", isPresented: $showCustomRate) {
-            TextField("1,1.5,2", text: $customRateText)
-                .keyboardType(.numbersAndPunctuation)
+            TextField("1-1.5-2", text: $rateInputText)
             Button("取消", role: .cancel) {}
             Button("确定") {
-                let list = DYPlaybackRates.parseList(customRateText)
-                customRateText = DYPlaybackRates.serialize(list)
+                let list = DYPlaybackRates.parseList(rateInputText)
+                let saved = DYPlaybackRates.serialize(list)
+                customRateText = saved
+                rateInputText = saved
+                // 立即落盘，不依赖 @AppStorage 的延迟同步
+                UserDefaults.standard.set(saved, forKey: DYPlaybackRates.customKey)
                 if !list.contains(where: { abs($0 - playbackRate) < 0.001 }) { playbackRate = list[0] }
                 onToast?(rateTitle(playbackRate))
             }
         } message: {
-            Text("可填多个倍速，用逗号隔开（0.1~4.0），例如 1,1.5,2。倍速按钮只在这些值之间切换；留空会保留 1。")
+            Text("多个倍速用减号 - 隔开（0.1~4.0），例如 1-1.5-2。倍速按钮只在这些值之间切换；留空会保留 1。")
         }
     }
 
@@ -4433,7 +4440,16 @@ struct DYUpstreamVideoPage: View {
                     .ddMediaGlassCircle()
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("切换倍速，当前 \(playbackRate) 倍")
+            // 单击循环下一档；长按弹出列表里所有倍速直接选
+            .contextMenu {
+                let rates = DYPlaybackRates.cycle(customRateText)
+                ForEach(rates, id: \.self) { r in
+                    Button { playbackRate = r } label: {
+                        Label(DYPlaybackRates.title(r) + "×", systemImage: abs(r - playbackRate) < 0.001 ? "checkmark" : "speedometer")
+                    }
+                }
+            }
+            .accessibilityLabel("切换倍速，当前 \(playbackRate) 倍，长按可选具体倍速")
             .accessibilityIdentifier("douyin.rail.speed")
             Button {
                 railVisible.toggle()
@@ -4607,6 +4623,7 @@ struct DYUpstreamVideoPage: View {
                 }
                 // 显示当前实际倍速；点开编辑整串倍速列表。
                 Button {
+                    rateInputText = customRateText
                     showCustomRate = true
                 } label: {
                     Label("倍速 · \(DYPlaybackRates.title(playbackRate))×", systemImage: "speedometer")
