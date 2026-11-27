@@ -712,6 +712,14 @@ struct PlayerPage: View {
                     .animation(commentReduceMotion ? nil : .snappy, value: showsVideoAboveComments)
                 }
             }
+            // 抖音同款：铺满到状态栏时补一层极淡顶部渐变，白字时间/信号在亮色画面上也看得清。
+            // 只在铺满、当前页、没把视频移到评论上方、非分栏窗格时画；完整画面本来就有黑边，不需要。
+            if fillWidth && isActive && !showsVideoAboveComments && !restrictsPlaybackToPane {
+                LinearGradient(colors: [.black.opacity(0.32), .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 96)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .allowsHitTesting(false)
+            }
             if !cleanScreen && isActive && !touchpadEngaged && (!danmaku.isEmpty || dmStress) {
                 DYDanmakuLayer(items: danmaku, clock: dmClock, topInset: topInset)
             }

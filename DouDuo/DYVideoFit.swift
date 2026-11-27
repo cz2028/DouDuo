@@ -4,7 +4,9 @@ import Foundation
 /// 铺满宽度。默认仍然打开：视频和屏幕同向时 Aspect Fill，异向时保持 Aspect Fit。
 /// 播放容器始终铺满屏幕；关掉铺满后，内容缩小，四周露出已有的环境光。
 enum DYVideoFit {
-    static let preferenceKey = "douyin_autofit_v1"
+    /// v2：老板 2026-11-27 要抖音同款「铺满到状态栏」。老版本默认被手动切到「完整画面」存了下来，
+    /// 换 key 让所有人重新吃到 defaultFillWidth=true（铺满）。用户仍可用右侧栏按钮一键切回完整画面。
+    static let preferenceKey = "douyin_autofit_v2"
     static let title = "铺满宽度"
     static let moreIdentifier = "douyin.quick.fit"
     /// 与原来的 @AppStorage 默认值一致。本热修不改默认缩放策略。
