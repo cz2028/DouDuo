@@ -4146,7 +4146,6 @@ struct DYUpstreamVideoPage: View {
     @AppStorage(DYPlaybackRates.customKey) private var customRateText = "1"
     /// 弹窗输入框临时值：不直接绑 @AppStorage，避免点确定时最后输入没同步回去被抹掉
     @State private var rateInputText = "1"
-    @State private var heart = false
     @State private var shareCoversOfflineVideo = false
     @State private var saving = false
     @FocusState private var danmakuFocused: Bool
@@ -4194,11 +4193,7 @@ struct DYUpstreamVideoPage: View {
                                     preparedPlayer: usesOfflineFile ? nil : { preloader.take(item.id) },
                                     returnPlayer: usesOfflineFile ? nil : { preloader.giveBack(item.id, $0) },
                                     onEnded: autoNext ? onEnded : nil,
-                                    onDoubleTap: {
-                                        onDoubleTap()
-                                        heart = true
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
-                                    },
+                                    onDoubleTap: onDoubleTap,
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
                                     onFillWidthChange: { autoFit = $0 },
                                     danmaku: danmakuOn ? dm.items : [],
@@ -4218,21 +4213,7 @@ struct DYUpstreamVideoPage: View {
                                musicURL: item.musicURL.flatMap(URL.init(string:)),
                                isActive: isCurrent,
                                muted: muted,
-                               onDoubleTap: {
-                                   onDoubleTap()
-                                   heart = true
-                                   DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
-                               })
-            }
-
-            if heart {
-                Image(systemName: "heart.fill")
-                    .font(.system(size: theme.typography.pointSize(.splash)))
-                    .scaleEffect(1.7)
-                    .foregroundStyle(theme.status.danger.color(for: scheme))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.scale.combined(with: .opacity))
-                    .allowsHitTesting(false)
+                               onDoubleTap: onDoubleTap)
             }
 
             if commentsOpen {
@@ -4289,7 +4270,6 @@ struct DYUpstreamVideoPage: View {
         .preference(key: DYFeedComposerPreference.self, value: composerEntry)
         .preference(key: DYFeedRailPreference.self, value: railEntry(fg))
         .preference(key: DYTouchpadActionsKey.self, value: isCurrent && onBack == nil ? DYTouchpadActions(id: item.id, view: AnyView(actions(fg))) : nil)
-        .animation(.snappy, value: heart)
         .onChange(of: isCurrent) { _, c in
             if !c { dm.showInput = false }
             if c, onBack == nil { DYBoostRouter.shared.adopt(boost) }
@@ -4758,7 +4738,6 @@ struct DYClassicVideoPage: View {
     }
     @Environment(\.ddScale) private var ui
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
-    @State private var heart = false
     @State private var showShare = false
     @State private var showOptions = false
     @FocusState private var danmakuFocused: Bool
@@ -4807,11 +4786,7 @@ struct DYClassicVideoPage: View {
                                     preparedPlayer: usesOfflineFile ? nil : { preloader.take(item.id) },
                                     returnPlayer: usesOfflineFile ? nil : { preloader.giveBack(item.id, $0) },
                                     onEnded: autoNext ? onEnded : nil,
-                                    onDoubleTap: {
-                                        onDoubleTap()
-                                        heart = true
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
-                                    },
+                                    onDoubleTap: onDoubleTap,
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
                                     onFillWidthChange: { autoFit = $0 },
                                     danmaku: danmakuOn ? dm.items : [],
@@ -4839,21 +4814,7 @@ struct DYClassicVideoPage: View {
                                isActive: isCurrent,
                                muted: DYGalleryAudio.globalMuted,
                                hidesIndex: cleanScreen,
-                               onDoubleTap: {
-                                   onDoubleTap()
-                                   heart = true
-                                   DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
-                               })
-            }
-
-            if heart && !cleanScreen {
-                Image(systemName: "heart.fill")
-                    .font(.system(size: theme.typography.pointSize(.splash)))
-                    .scaleEffect(1.7)
-                    .foregroundStyle(theme.status.danger.color(for: scheme))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.scale.combined(with: .opacity))
-                    .allowsHitTesting(false)
+                               onDoubleTap: onDoubleTap)
             }
 
             if !cleanScreen && !inlineCommentVisible {
@@ -4911,7 +4872,6 @@ struct DYClassicVideoPage: View {
             guard !Task.isCancelled else { return }
             authorImage = image.map(circularAvatar)
         }
-        .animation(.snappy, value: heart)
         .onChange(of: isCurrent) { _, c in if !c { dm.showInput = false } }
         // 弹幕：轮到这条时才拉（一次拉整条视频的）——共用 DYDanmakuModel
         .task(id: isCurrent) { await dm.load(item, isCurrent: isCurrent, bridge: bridge) }
