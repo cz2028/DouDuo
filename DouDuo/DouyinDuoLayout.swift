@@ -451,10 +451,18 @@ struct DYInlineCommentPlacement {
         return aweme.videoAspect.isFinite && aweme.videoAspect > 1
     }
 
-    @MainActor init?(_ geo: GeometryProxy, aweme: DYAweme?, enabled: Bool, showsCaption: Bool,
-                     usesCompactPanel: Bool) {
+    /// 老板 11-27：普通竖屏手机打开评论，视频也像官方那样缩小上移。只认竖屏视频（图集 / 直播不缩）。
+    static func appliesPortrait(to aweme: DYAweme?) -> Bool {
+        guard let aweme, aweme.images.isEmpty, aweme.play != nil else { return false }
+        return aweme.videoAspect.isFinite && aweme.videoAspect > 0 && aweme.videoAspect < 1
+    }
+
+    @MainActor init?(_ geo: GeometryProxy, aweme: DYAweme?, enabled: Bool, allowsPortraitLift: Bool = false,
+                     showsCaption: Bool, usesCompactPanel: Bool) {
         guard !DYDuoMetrics.foldIsActive(geo), let aweme else { return nil }
-        let liftsVideo = Self.applies(to: aweme, enabled: enabled)
+        let landscapeLift = Self.applies(to: aweme, enabled: enabled)
+        let portraitLift = allowsPortraitLift && Self.appliesPortrait(to: aweme)
+        let liftsVideo = landscapeLift || portraitLift
         let compactCaption = showsCaption && (enabled || geo.size.width < DYDuoMetrics.legacyWideMin)
         guard liftsVideo || compactCaption || usesCompactPanel else { return nil }
 
@@ -462,7 +470,9 @@ struct DYInlineCommentPlacement {
         let bottom = bounds.maxY + DYDuoMetrics.bottomSafeAreaExtension(in: geo)
         let split: CGFloat
         if liftsVideo {
-            let available = CGSize(width: bounds.width, height: max(0, bottom) * 0.38)
+            // 竖屏视频缩到约 30% 高（更接近官方：上方小窗、评论占下方）；横屏沿用原来的 38%。
+            let fraction: CGFloat = portraitLift && !landscapeLift ? 0.32 : 0.38
+            let available = CGSize(width: bounds.width, height: max(0, bottom) * fraction)
             let fitted = DYVideoFit.contentSize(container: available, videoAspect: aweme.videoAspect, fillWidth: false)
             let frame = CGRect(x: bounds.minX, y: 0, width: bounds.width, height: fitted.height)
             videoFrame = frame
@@ -493,6 +503,7 @@ struct DYInlineCommentOverlay: ViewModifier {
     let onClose: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(DYCommentOpacity.key) private var commentOpacity = DYCommentOpacity.defaultValue
 
     func body(content: Content) -> some View {
         content
@@ -508,7 +519,7 @@ struct DYInlineCommentOverlay: ViewModifier {
                             .onTapGesture(perform: onClose)
                             .accessibilityHidden(true)
                         DYEdgePanelSurface(width: placement.panelWidth, height: placement.panelHeight,
-                                           onClose: onClose) {
+                                           surfaceOpacity: commentOpacity, onClose: onClose) {
                             DYCommentPanel(bridge: bridge, aweme: aweme, onClose: onClose, focus: focus)
                                 .id(aweme.id)
                         }
@@ -581,6 +592,7 @@ struct DYBottomPanelContentHeightKey: PreferenceKey {
 
 private struct DYEdgeBottomPanel<Panel: View>: View {
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(DYCommentOpacity.key) private var commentOpacity = DYCommentOpacity.defaultValue
     @State private var contentHeight: CGFloat?
     let kind: DYBottomSheetKind
     @ViewBuilder var panel: () -> Panel
@@ -599,7 +611,9 @@ private struct DYEdgeBottomPanel<Panel: View>: View {
                     .contentShape(Rectangle())
                     .onTapGesture { dismiss() }
                     .accessibilityHidden(true)
-                DYEdgePanelSurface(width: panelWidth, height: panelHeight, onClose: { dismiss() }) {
+                DYEdgePanelSurface(width: panelWidth, height: panelHeight,
+                                   surfaceOpacity: kind == .comments ? commentOpacity : 1,
+                                   onClose: { dismiss() }) {
                     panel()
                         .onPreferenceChange(DYBottomPanelContentHeightKey.self) { height in
                             if height > 0 { contentHeight = height }
@@ -618,6 +632,7 @@ private struct DYEdgePanelSurface<Panel: View>: View {
     @State private var dragOffset: CGFloat = 0
     let width: CGFloat
     let height: CGFloat
+    let surfaceOpacity: Double
     let onClose: () -> Void
     @ViewBuilder var panel: () -> Panel
 
@@ -637,7 +652,7 @@ private struct DYEdgePanelSurface<Panel: View>: View {
                 }))
         }
         .frame(width: width, height: height, alignment: .top)
-        .dyPanelGlass(in: shape)
+        .dyPanelGlass(in: shape, opacity: surfaceOpacity)
         .clipShape(shape)
         .offset(y: dragOffset)
         .accessibilityElement(children: .contain)
@@ -874,9 +889,16 @@ extension View {
         if #available(iOS 27.1, *) { self.toolbarVerticalBehavior(.disabled) }
         else { self }
     }
-    @ViewBuilder func dyPanelGlass<S: Shape>(in shape: S) -> some View {
-        if #available(iOS 26.0, *) { self.glassEffect(.regular, in: shape) }
-        else { self.background(.ultraThinMaterial, in: shape) }
+    @ViewBuilder func dyPanelGlass<S: Shape>(in shape: S, opacity: Double = 1) -> some View {
+        // 老板 11-27：评论背景要能调到 0% 全透明。毛玻璃没法精确控制透明度，
+        // 低透明度改用纯色背景（只铺在底层，评论文字不受影响）；100% 时保留原来的毛玻璃。
+        if opacity < 0.999 {
+            self.background(shape.fill(Color.ddBackground.opacity(max(0, opacity))))
+        } else if #available(iOS 26.0, *) {
+            self.glassEffect(.regular, in: shape)
+        } else {
+            self.background(.ultraThinMaterial, in: shape)
+        }
     }
 }
 

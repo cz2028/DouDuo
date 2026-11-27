@@ -2375,6 +2375,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                        showSearch: showSearch, isLive: tab == .live,
                        stacksLandscapeComments: stacksLandscapeComments,
                        hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
+                       allowsPortraitVideoLift: true,
                        onPage: tab == .recommend ? { pageBy($0) } : nil,
                        onLiveTap: tab == .recommend ? current?.live.map { l in { enterFeedLive(l.room) } } : nil,
                        feed: { feedArea },
@@ -3684,6 +3685,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                        showSearch: showSearch, isLive: tab == .live,
                        stacksLandscapeComments: stacksLandscapeComments,
                        hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
+                       allowsPortraitVideoLift: true,
                        showsCaption: captionItem != nil,
                        authorPane: (id: authorTarget?.id, workOpen: authorWorkOpen, supportsSidePanel: supportsSidePanel),
                        onPage: tab == .recommend ? { pageBy($0) } : nil,
@@ -5430,8 +5432,13 @@ struct DYCommentPanel: View {
         .accessibilityIdentifier("douyin.comments.panel")
         .padding(.trailing, fillsPane ? trailingInset : 0)
         .background {
-            // 只调背景透明度，评论文字保持清晰；调低可透出下方视频
-            if fillsPane { Color.ddBackground.opacity(commentOpacity) } else { GlassBackground().opacity(commentOpacity) }
+            // 只调背景透明度，评论文字保持清晰；调低可透出下方视频（0% 全透明）。
+            // 毛玻璃的 opacity 在部分 iOS 版本上降不到全透明，低透明度统一改用纯色。
+            if fillsPane || commentOpacity < 0.999 {
+                Color.ddBackground.opacity(max(0, commentOpacity))
+            } else {
+                GlassBackground()
+            }
         }
         .modifier(DYRailReservedNudge(disabled: fillsPane))
         .task(id: aweme.id) { relatedWords = await bridge.relatedSearch(for: aweme) }

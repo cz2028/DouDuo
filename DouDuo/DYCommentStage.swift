@@ -33,6 +33,9 @@ struct DYCommentStage<Feed: View, Author: View>: View {
     var showsCaption = false
     /// 右侧作者页（经典内屏）；其它界面传 nil
     var authorPane: (id: String?, workOpen: Bool, supportsSidePanel: Bool)? = nil
+    /// 老板 11-27：普通竖屏手机打开评论时把视频缩小上移（像官方）。只有推荐/关注主 feed 传 true；
+    /// 折叠屏 / 横屏 / iPad 侧栏 / 列表页一律不受影响。
+    var allowsPortraitVideoLift = false
     /// 半折叠触控板上下滑翻页（+1 下一条 / -1 上一条）；nil = 不支持
     var onPage: ((Int) -> Void)? = nil
     /// 当前条是推荐流里的直播间：没有评论可显示，下半屏直接是触控板，单击 = 进直播间（老板 11-24）
@@ -57,6 +60,7 @@ struct DYCommentStage<Feed: View, Author: View>: View {
         let showsAuthorPane = (authorPane?.supportsSidePanel ?? false) && authorOpen
         let placement = showComments && !showSearch && !authorOpen && !isLive
             ? DYInlineCommentPlacement(geo, aweme: aweme, enabled: stacksLandscapeComments,
+                                       allowsPortraitLift: allowsPortraitVideoLift,
                                        showsCaption: showsCaption, usesCompactPanel: stacksLandscapeComments)
             : nil
         let layout = DYCommentPaneMetrics(geo, isPresented: !showSearch && (showsAuthorPane || (showComments && placement == nil)),
@@ -206,6 +210,7 @@ extension DYCommentStage where Author == EmptyView {
     init(geo: GeometryProxy, bridge: DouyinBridge, aweme: DYAweme?, showComments: Binding<Bool>,
          showSearch: Bool, isLive: Bool, stacksLandscapeComments: Bool,
          hidesCommentStatus: Bool, horizontalCommentStatus: Bool,
+         allowsPortraitVideoLift: Bool = false,
          onPage: ((Int) -> Void)? = nil,
          onLiveTap: (() -> Void)? = nil,
          @ViewBuilder feed: @escaping () -> Feed,
@@ -213,6 +218,7 @@ extension DYCommentStage where Author == EmptyView {
         self.init(geo: geo, bridge: bridge, aweme: aweme, showComments: showComments, showSearch: showSearch,
                   isLive: isLive, stacksLandscapeComments: stacksLandscapeComments,
                   hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
+                  allowsPortraitVideoLift: allowsPortraitVideoLift,
                   onPage: onPage, onLiveTap: onLiveTap, feed: feed, author: { EmptyView() }, onLayout: onLayout)
     }
 }
