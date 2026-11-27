@@ -1,5 +1,11 @@
 import SwiftUI
 
+/// 评论面板背景透明度：1.0 = 完全不透明（默认，保持原样）；调低可透出下方视频（老板 11-27 要求可调）。
+enum DYCommentOpacity {
+    static let key = "douyin_comment_opacity_v1"
+    static let defaultValue: Double = 1.0
+}
+
 /// 推荐页评论排布：四种界面同一份（老板 2026-11-17 定，见 docs/ui-modes.md）。
 ///
 /// 原样搬自经典推荐页（DYClassicFeedScreen.flatArrangement），一套布局通吃所有状态，且**不换容器**

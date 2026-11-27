@@ -4223,11 +4223,13 @@ struct DYUpstreamVideoPage: View {
                 DYAdaptiveActionRail { edge in
                     HStack(alignment: .bottom, spacing: 12) {
                         if edge == .leading { actionRail(fg, edge: edge) }
-                        HStack(alignment: .top, spacing: 8) {
+                        // 11-27 老板要求：三个小按钮从作者名那行挪到文案/音乐下方，文案不再被挤窄；
+                        // 整组撑满可用宽度，文案自适应视频宽（原来 HStack 并排把文案压到很窄）。
+                        VStack(alignment: .leading, spacing: 8) {
                             if !chromeMode.hidesInfo || (isCurrent && peek.on) { info(fg).transition(.opacity) }
                             auxControls(fg)
                         }
-                        Spacer(minLength: 0)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         if edge == .trailing { actionRail(fg, edge: edge) }
                     }
                     .padding(.horizontal, chromeSidePadding)
@@ -4239,12 +4241,13 @@ struct DYUpstreamVideoPage: View {
                 .opacity(boost.boosting ? 0 : 1)
                 .animation(.easeOut(duration: 0.15), value: boost.boosting)
             } else {
-                // 默认：PR #12 之前的布局，左下信息 + 右侧按钮栏
+                // 默认：左下信息 + 右侧按钮栏；三个小按钮挪到文案下方，文案自适应视频宽度
                 HStack(alignment: .bottom, spacing: 12) {
-                    HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 8) {
                         info(fg)
                         auxControls(fg)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     Spacer(minLength: 0)
                     actions(fg)
                         .offset(x: DYDuoMetrics.actionRailHorizontalOffset(
@@ -5143,6 +5146,8 @@ struct DYCommentPanel: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.dyCommentTrailingCleared) private var trailingCleared
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
+    /// 评论背景透明度（老板 11-27）：调低可透出下方视频，默认不透明
+    @AppStorage(DYCommentOpacity.key) private var commentOpacity = DYCommentOpacity.defaultValue
     /// 评论面板四种界面统一用经典样式（老板 2026-11-17 定，外屏内屏都一样）。
     private var usesClassicComments: Bool {
         if #available(iOS 27.1, *) { return true }
@@ -5425,7 +5430,8 @@ struct DYCommentPanel: View {
         .accessibilityIdentifier("douyin.comments.panel")
         .padding(.trailing, fillsPane ? trailingInset : 0)
         .background {
-            if fillsPane { Color.ddBackground } else { GlassBackground() }
+            // 只调背景透明度，评论文字保持清晰；调低可透出下方视频
+            if fillsPane { Color.ddBackground.opacity(commentOpacity) } else { GlassBackground().opacity(commentOpacity) }
         }
         .modifier(DYRailReservedNudge(disabled: fillsPane))
         .task(id: aweme.id) { relatedWords = await bridge.relatedSearch(for: aweme) }
@@ -5439,7 +5445,7 @@ struct DYCommentPanel: View {
     private var classicBody: some View {
         panelContent
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(fillsPane ? Color(uiColor: .secondarySystemBackground) : .clear)
+            .background(fillsPane ? Color(uiColor: .secondarySystemBackground).opacity(commentOpacity) : .clear)
             .clipped()
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("douyin.comments.panel")

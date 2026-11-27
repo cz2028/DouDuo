@@ -18,6 +18,8 @@ struct DYSettingsScreen: View {
     // 界面
     @AppStorage(DDAppearance.key) private var appearance = DDAppearance.dark.rawValue
     @AppStorage(DDChromeMode.key) private var chromeMode = DDChromeMode.classic.rawValue
+    /// 评论面板背景透明度（11-27 老板要求可调，调低可透出下方视频）
+    @AppStorage(DYCommentOpacity.key) private var commentOpacity = DYCommentOpacity.defaultValue
     // 播放
     @AppStorage(DYPlaybackQuality.storageKey) private var playQuality = DYPlaybackQuality.p720.rawValue
     @AppStorage(DYAutoPiP.storageKey) private var autoPiP = false
@@ -72,8 +74,20 @@ struct DYSettingsScreen: View {
                         }
                         .accessibilityIdentifier("settings.chrome")
                     }
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("评论背景透明度")
+                            Spacer()
+                            Text("\(Int(commentOpacity * 100))%")
+                                .foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        Slider(value: $commentOpacity, in: 0.3...1.0, step: 0.05)
+                    }
+                    .accessibilityIdentifier("settings.comment.opacity")
                 } header: {
                     Text("界面")
+                } footer: {
+                    Text("评论背景调低可以透出下方视频，文字始终清晰。")
                 }
 
                 Section {
